@@ -1,0 +1,42 @@
+# Example terraform.tfvars file for Unreal Engine 5 Compilation Infrastructure
+# Copy this file to terraform.tfvars and modify the values as needed
+
+# Global Configuration
+project_name = "unreal-engine-5-compilation"
+environment  = "dev"  # Options: dev, staging, prod
+aws_region   = "us-east-1"
+
+# VPC Configuration
+vpc_cidr           = "10.0.0.0/16"
+enable_nat_gateway = true
+
+# EC2 Instance Configuration
+instance_type      = "c5.2xlarge"  # 8 vCPUs, 16 GB RAM - minimum recommended
+instance_name      = "ue5-compilation-server"
+root_volume_size   = 100  # GB
+root_volume_type   = "gp3"
+enable_spot_instance = false  # Set to true for cost optimization
+
+# Security Configuration
+# WARNING: This allows access from anywhere. Restrict to your IP for production.
+allowed_cidr_blocks = ["0.0.0.0/0"]  # Replace with your IP address
+key_pair_name       = ""  # Optional: specify your EC2 key pair name
+
+# Unreal Engine Configuration
+unreal_engine_version = "5.4"
+unreal_engine_branch  = "5.4"  # Git branch or tag
+enable_ue5_editor     = true
+enable_ue5_server     = true
+enable_ue5_linux      = false
+
+# Build Configuration
+parallel_build_jobs = 0  # 0 means use all available cores
+build_timeout_hours = 8
+
+# Additional Tags
+additional_tags = {
+  Owner       = "your-name"
+  Department  = "game-development"
+  CostCenter  = "gamedev"
+  Backup      = "true"
+} 

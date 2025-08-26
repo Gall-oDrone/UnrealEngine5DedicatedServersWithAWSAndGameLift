@@ -1,0 +1,44 @@
+# Development Environment Configuration Example
+# Copy this file to terraform.tfvars and modify the values as needed
+
+# Project configuration
+project_name = "my-ue5-compilation-dev"
+aws_region   = "us-east-1"
+owner        = "game-dev-team"
+
+# Networking configuration
+vpc_cidr_block       = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
+private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
+enable_nat_gateway   = false  # Set to true if you need private subnets
+
+# Compute configuration
+instance_type    = "c5.2xlarge"  # Minimum recommended for UE5 compilation
+key_pair_name    = "your-key-pair-name"  # Optional: for SSH/RDP access
+root_volume_size = 100
+data_volume_size = 500
+
+# Security configuration - IMPORTANT: Restrict to your IP addresses
+allowed_cidr_blocks = [
+  "YOUR_IP_ADDRESS/32",  # Replace with your actual IP
+  "10.0.0.0/16"          # Allow access from VPC
+]
+
+# Unreal Engine configuration
+unreal_engine_version = "5.4"
+unreal_engine_branch  = "5.4"
+
+# Storage configuration
+enable_s3_access = false
+s3_bucket_name   = ""
+
+# Security features
+enable_kms          = false  # Set to true for additional encryption
+enable_vpc_flow_logs = true
+log_retention_days  = 30
+
+# Monitoring configuration
+enable_memory_monitoring = false
+enable_disk_monitoring   = false
+enable_sns_notifications = false
+notification_email       = "your-email@example.com"  # Required if enable_sns_notifications = true 
