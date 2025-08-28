@@ -254,6 +254,9 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -v|--validate)
+            validate_environment "$ENVIRONMENT"
+            check_prerequisites
+            init_terraform
             validate_terraform
             exit 0
             ;;
@@ -276,11 +279,11 @@ main() {
     # Check prerequisites
     check_prerequisites
     
+    # Initialize Terraform first (required before validation)
+    init_terraform
+    
     # Validate Terraform configuration
     validate_terraform
-    
-    # Initialize Terraform
-    init_terraform
     
     if [[ "$PLAN_ONLY" == true ]]; then
         plan_terraform

@@ -15,7 +15,7 @@ resource "aws_iam_role" "ue5_compilation" {
     ]
   })
 
-  tags = merge(var.additional_tags, {
+  tags = merge(var.common_tags, {
     Name = "${var.project_name}-ue5-compilation-role-${var.environment}"
   })
 }
@@ -23,13 +23,13 @@ resource "aws_iam_role" "ue5_compilation" {
 # IAM Instance Profile
 resource "aws_iam_instance_profile" "ue5_compilation" {
   name = "${var.project_name}-ue5-compilation-profile-${var.environment}"
-  role = aws_iam_role.ue5_compilation.name
+  role = aws_iam_role.ec2_role.name
 }
 
 # CloudWatch Logs policy for the IAM role
 resource "aws_iam_role_policy" "cloudwatch_logs" {
   name = "${var.project_name}-cloudwatch-logs-policy-${var.environment}"
-  role = aws_iam_role.ue5_compilation.id
+  role = aws_iam_role.ec2_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -53,7 +53,7 @@ resource "aws_iam_role_policy" "cloudwatch_logs" {
 # S3 access policy for storing build artifacts (optional)
 resource "aws_iam_role_policy" "s3_access" {
   name = "${var.project_name}-s3-access-policy-${var.environment}"
-  role = aws_iam_role.ue5_compilation.id
+  role = aws_iam_role.ec2_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -79,18 +79,18 @@ resource "aws_iam_role_policy" "s3_access" {
 resource "aws_instance" "ue5_compilation" {
   ami           = data.aws_ami.windows_server.id
   instance_type = var.instance_type
-  subnet_id     = aws_subnet.public[0].id
+  subnet_id     = var.subnet_id
 
-  vpc_security_group_ids = [aws_security_group.ue5_compilation.id]
+  vpc_security_group_ids = [aws_security_group.ec2.id]
   key_name               = var.key_pair_name != "" ? var.key_pair_name : null
-  iam_instance_profile   = aws_iam_instance_profile.ue5_compilation.name
+  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
 
   root_block_device {
     volume_size = var.root_volume_size
     volume_type = var.root_volume_type
     encrypted   = true
 
-    tags = merge(var.additional_tags, {
+    tags = merge(var.common_tags, {
       Name = "${var.project_name}-root-volume-${var.environment}"
     })
   }
@@ -124,8 +124,8 @@ resource "aws_instance" "ue5_compilation" {
     environment           = var.environment
   }))
 
-  tags = merge(var.additional_tags, {
-    Name = "${var.instance_name}-${var.environment}"
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-ue5-compilation-${var.environment}"
   })
 
   lifecycle {
@@ -140,7 +140,7 @@ resource "aws_ebs_volume" "ue5_data" {
   type              = "gp3"
   encrypted         = true
 
-  tags = merge(var.additional_tags, {
+  tags = merge(var.common_tags, {
     Name = "${var.project_name}-ue5-data-volume-${var.environment}"
   })
 }

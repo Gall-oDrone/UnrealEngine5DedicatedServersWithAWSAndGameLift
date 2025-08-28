@@ -80,4 +80,46 @@ variable "common_tags" {
   description = "Common tags to apply to all resources"
   type        = map(string)
   default     = {}
+}
+
+variable "enable_ue5_editor" {
+  description = "Whether to enable Unreal Engine 5 Editor compilation"
+  type        = bool
+  default     = true
+}
+
+variable "enable_ue5_server" {
+  description = "Whether to enable Unreal Engine 5 Server compilation"
+  type        = bool
+  default     = true
+}
+
+variable "enable_ue5_linux" {
+  description = "Whether to enable Unreal Engine 5 Linux compilation"
+  type        = bool
+  default     = false
+}
+
+variable "parallel_build_jobs" {
+  description = "Number of parallel build jobs"
+  type        = number
+  default     = 4
+}
+
+variable "build_timeout_hours" {
+  description = "Build timeout in hours"
+  type        = number
+  default     = 24
+}
+
+variable "root_volume_type" {
+  description = "Type of the root volume"
+  type        = string
+  default     = "gp3"
+}
+
+variable "enable_spot_instance" {
+  description = "Whether to use spot instances for cost optimization"
+  type        = bool
+  default     = false
 } 

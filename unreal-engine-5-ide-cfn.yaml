@@ -410,6 +410,100 @@ Resources:
                       attempt=$((attempt + 1))
                   done
 
+                  # Install Terraform
+                  echo "Installing Terraform..."
+                  TERRAFORM_VERSION="1.9.8"
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      if curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"; then
+                          unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+                          sudo mv terraform /usr/local/bin/
+                          sudo chmod +x /usr/local/bin/terraform
+                          rm -f terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+                          # Verify installation
+                          if terraform version; then
+                              echo "Terraform ${TERRAFORM_VERSION} installed successfully"
+                              break
+                          fi
+                      fi
+                      echo "Terraform installation attempt $attempt failed, retrying..."
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+
+                  # Install kubectl
+                  echo "Installing kubectl..."
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+                      if curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; then
+                          if curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"; then
+                              # Verify the binary
+                              if echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check; then
+                                  sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+                                  rm -f kubectl kubectl.sha256
+                                  # Verify installation
+                                  if kubectl version --client; then
+                                      echo "kubectl ${KUBECTL_VERSION} installed successfully"
+                                      break
+                                  fi
+                              else
+                                  echo "kubectl checksum verification failed"
+                              fi
+                          fi
+                      fi
+                      echo "kubectl installation attempt $attempt failed, retrying..."
+                      rm -f kubectl kubectl.sha256
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+
+                  # Install Helm
+                  echo "Installing Helm..."
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      if curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3; then
+                          chmod 700 get_helm.sh
+                          if ./get_helm.sh; then
+                              rm -f get_helm.sh
+                              # Verify installation
+                              if helm version; then
+                                  echo "Helm installed successfully"
+                                  break
+                              fi
+                          fi
+                      fi
+                      echo "Helm installation attempt $attempt failed, retrying..."
+                      rm -f get_helm.sh
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+
+                  # Install eksctl
+                  echo "Installing eksctl..."
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      ARCH=amd64
+                      PLATFORM=$(uname -s)_$ARCH
+                      if curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"; then
+                          tar -xzf eksctl_$PLATFORM.tar.gz -C /tmp
+                          sudo mv /tmp/eksctl /usr/local/bin
+                          rm -f eksctl_$PLATFORM.tar.gz
+                          # Verify installation
+                          if eksctl version; then
+                              echo "eksctl installed successfully"
+                              break
+                          fi
+                      fi
+                      echo "eksctl installation attempt $attempt failed, retrying..."
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+
                   export environment="${Environment}"
 
                   # Download and source common environment
