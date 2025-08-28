@@ -1,7 +1,11 @@
 # Compute Module for Unreal Engine 5 Infrastructure
 # This module creates EC2 instances and related compute resources
 
-# Data sources
+# Data sources - THESE WERE MISSING
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
+# Data source for Windows AMI
 data "aws_ami" "windows_server" {
   most_recent = true
   owners      = ["amazon"]
@@ -72,7 +76,7 @@ resource "aws_security_group" "ec2" {
 
 # IAM Role for EC2 instances
 resource "aws_iam_role" "ec2_role" {
-  name = "${var.project_name}-ec2-role"
+  name = "${var.project_name}-ec2-role-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -92,7 +96,7 @@ resource "aws_iam_role" "ec2_role" {
 
 # IAM Instance Profile
 resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "${var.project_name}-ec2-profile"
+  name = "${var.project_name}-ec2-profile-${var.environment}"
   role = aws_iam_role.ec2_role.name
 }
 
@@ -112,7 +116,9 @@ resource "aws_iam_role_policy" "cloudwatch_policy" {
           "logs:PutLogEvents",
           "logs:DescribeLogStreams"
         ]
-        Resource = ["arn:aws:logs:*:*:*"]
+        Resource = [
+          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/ec2/${var.project_name}-${var.environment}*"
+        ]
       }
     ]
   })
@@ -143,8 +149,52 @@ resource "aws_iam_role_policy" "s3_policy" {
   })
 }
 
-# EC2 Instance
+# Spot Instance Request (if spot is enabled)
+resource "aws_spot_instance_request" "ue5_server_spot" {
+  count = var.enable_spot_instance ? 1 : 0
+  
+  ami                    = data.aws_ami.windows_server.id
+  instance_type          = var.instance_type
+  subnet_id              = var.subnet_id
+  vpc_security_group_ids = [aws_security_group.ec2.id]
+  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
+  key_name               = var.key_pair_name
+  
+  spot_price = var.spot_max_price
+  spot_type  = "one-time"
+  
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = var.root_volume_size
+    encrypted   = true
+  }
+
+  user_data = templatefile("${path.module}/templates/user_data.ps1", {
+    unreal_engine_version = var.unreal_engine_version
+    unreal_engine_branch  = var.unreal_engine_branch
+    enable_ue5_editor     = var.enable_ue5_editor ? "true" : "false"
+    enable_ue5_server     = var.enable_ue5_server ? "true" : "false"
+    enable_ue5_linux      = var.enable_ue5_linux ? "true" : "false"
+    parallel_build_jobs   = var.parallel_build_jobs
+    build_timeout_hours   = var.build_timeout_hours
+    project_name          = var.project_name
+    environment           = var.environment
+  })
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-ue5-server-spot"
+  })
+}
+
+# Regular On-Demand Instance (if spot is not enabled)
 resource "aws_instance" "ue5_server" {
+  count = var.enable_spot_instance ? 0 : 1
+  
   ami                    = data.aws_ami.windows_server.id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
@@ -161,6 +211,11 @@ resource "aws_instance" "ue5_server" {
   user_data = templatefile("${path.module}/templates/user_data.ps1", {
     unreal_engine_version = var.unreal_engine_version
     unreal_engine_branch  = var.unreal_engine_branch
+    enable_ue5_editor     = var.enable_ue5_editor ? "true" : "false"
+    enable_ue5_server     = var.enable_ue5_server ? "true" : "false"
+    enable_ue5_linux      = var.enable_ue5_linux ? "true" : "false"
+    parallel_build_jobs   = var.parallel_build_jobs
+    build_timeout_hours   = var.build_timeout_hours
     project_name          = var.project_name
     environment           = var.environment
   })
@@ -189,9 +244,18 @@ resource "aws_ebs_volume" "data_volume" {
   })
 }
 
-# EBS Volume Attachment
+# EBS Volume Attachment for on-demand instance
 resource "aws_volume_attachment" "data_volume_attachment" {
+  count       = var.enable_spot_instance ? 0 : 1
   device_name = "/dev/sdf"
   volume_id   = aws_ebs_volume.data_volume.id
-  instance_id = aws_instance.ue5_server.id
-} 
+  instance_id = aws_instance.ue5_server[0].id
+}
+
+# EBS Volume Attachment for spot instance
+resource "aws_volume_attachment" "data_volume_attachment_spot" {
+  count       = var.enable_spot_instance ? 1 : 0
+  device_name = "/dev/sdf"
+  volume_id   = aws_ebs_volume.data_volume.id
+  instance_id = aws_spot_instance_request.ue5_server_spot[0].spot_instance_id
+}
