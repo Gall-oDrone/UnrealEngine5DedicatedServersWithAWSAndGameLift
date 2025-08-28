@@ -1,69 +1,131 @@
-output "instance_id" {
-  description = "ID of the EC2 instance"
-  value       = var.enable_spot_instance ? (
-    length(aws_spot_instance_request.ue5_server_spot) > 0 ? aws_spot_instance_request.ue5_server_spot[0].spot_instance_id : null
-  ) : (
-    length(aws_instance.ue5_server) > 0 ? aws_instance.ue5_server[0].id : null
-  )
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
 }
 
-output "instance_public_ip" {
-  description = "Public IP address of the EC2 instance"
-  value       = var.enable_spot_instance ? (
-    length(aws_spot_instance_request.ue5_server_spot) > 0 ? aws_spot_instance_request.ue5_server_spot[0].public_ip : null
-  ) : (
-    length(aws_instance.ue5_server) > 0 ? aws_instance.ue5_server[0].public_ip : null
-  )
+variable "environment" {
+  description = "Environment name (dev, staging, prod)"
+  type        = string
 }
 
-output "instance_private_ip" {
-  description = "Private IP address of the EC2 instance"
-  value       = var.enable_spot_instance ? (
-    length(aws_spot_instance_request.ue5_server_spot) > 0 ? aws_spot_instance_request.ue5_server_spot[0].private_ip : null
-  ) : (
-    length(aws_instance.ue5_server) > 0 ? aws_instance.ue5_server[0].private_ip : null
-  )
+variable "vpc_id" {
+  description = "ID of the VPC"
+  type        = string
 }
 
-output "instance_arn" {
-  description = "ARN of the EC2 instance"
-  value       = var.enable_spot_instance ? (
-    length(aws_spot_instance_request.ue5_server_spot) > 0 ? aws_spot_instance_request.ue5_server_spot[0].arn : null
-  ) : (
-    length(aws_instance.ue5_server) > 0 ? aws_instance.ue5_server[0].arn : null
-  )
+variable "subnet_id" {
+  description = "ID of the subnet where the instance will be launched"
+  type        = string
 }
 
-output "security_group_id" {
-  description = "ID of the security group"
-  value       = aws_security_group.ec2.id
+variable "availability_zone" {
+  description = "Availability zone for the EBS volume"
+  type        = string
 }
 
-output "iam_role_arn" {
-  description = "ARN of the IAM role"
-  value       = aws_iam_role.ec2_role.arn
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "c5.2xlarge"
 }
 
-output "data_volume_id" {
-  description = "ID of the data EBS volume"
-  value       = aws_ebs_volume.data_volume.id
+variable "key_pair_name" {
+  description = "Name of the EC2 key pair"
+  type        = string
+  default     = null
 }
 
-output "instance_state" {
-  description = "Current state of the EC2 instance"
-  value       = var.enable_spot_instance ? (
-    length(aws_spot_instance_request.ue5_server_spot) > 0 ? aws_spot_instance_request.ue5_server_spot[0].instance_state : null
-  ) : (
-    length(aws_instance.ue5_server) > 0 ? aws_instance.ue5_server[0].instance_state : null
-  )
+variable "root_volume_size" {
+  description = "Size of the root volume in GB"
+  type        = number
+  default     = 100
 }
 
-output "spot_request_id" {
-  description = "ID of the spot instance request (if using spot)"
-  value       = var.enable_spot_instance && length(aws_spot_instance_request.ue5_server_spot) > 0 ? aws_spot_instance_request.ue5_server_spot[0].id : null
+variable "data_volume_size" {
+  description = "Size of the data volume in GB"
+  type        = number
+  default     = 500
 }
 
-output "instance_type_used" {
-  description = "Instance type being used"
-  value       = var.instance_type
+variable "allowed_cidr_blocks" {
+  description = "List of CIDR blocks allowed to access the instance"
+  type        = list(string)
+}
+
+variable "unreal_engine_version" {
+  description = "Unreal Engine version to install"
+  type        = string
+  default     = "5.4"
+}
+
+variable "unreal_engine_branch" {
+  description = "Unreal Engine branch to use"
+  type        = string
+  default     = "5.4"
+}
+
+variable "enable_s3_access" {
+  description = "Whether to enable S3 access for the instance"
+  type        = bool
+  default     = false
+}
+
+variable "s3_bucket_name" {
+  description = "Name of the S3 bucket for build artifacts"
+  type        = string
+  default     = ""
+}
+
+variable "common_tags" {
+  description = "Common tags to apply to all resources"
+  type        = map(string)
+  default     = {}
+}
+
+variable "enable_ue5_editor" {
+  description = "Whether to enable Unreal Engine 5 Editor compilation"
+  type        = bool
+  default     = true
+}
+
+variable "enable_ue5_server" {
+  description = "Whether to enable Unreal Engine 5 Server compilation"
+  type        = bool
+  default     = true
+}
+
+variable "enable_ue5_linux" {
+  description = "Whether to enable Unreal Engine 5 Linux compilation"
+  type        = bool
+  default     = false
+}
+
+variable "parallel_build_jobs" {
+  description = "Number of parallel build jobs"
+  type        = number
+  default     = 4
+}
+
+variable "build_timeout_hours" {
+  description = "Build timeout in hours"
+  type        = number
+  default     = 24
+}
+
+variable "root_volume_type" {
+  description = "Type of the root volume"
+  type        = string
+  default     = "gp3"
+}
+
+variable "enable_spot_instance" {
+  description = "Whether to use spot instances for cost optimization"
+  type        = bool
+  default     = false
+}
+
+variable "spot_max_price" {
+  description = "Maximum price for spot instance (leave empty for on-demand price)"
+  type        = string
+  default     = ""
 }
