@@ -1,0 +1,1173 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creates a code-server IDE for Unreal Engine 5 Dedicated Servers with AWS and GameLift
+Parameters:
+  InstanceVolumeSize:
+    Type: Number
+    Description: The Size in GB of the Cloud9 Instance Volume.
+    Default: 30
+  RepositoryOwner:
+    Type: String
+    Description: The owner of the GitHub repository to be used to bootstrap the IDE
+    Default: "Gall-oDrone"
+  RepositoryName:
+    Type: String
+    Description: The name of the GitHub repository to be used to bootstrap the IDE
+    Default: "UnrealEngine5DedicatedServersWithAWSAndGameLift"
+  RepositoryRef:
+    Type: String
+    Description: The Git reference to be used to bootstrap the IDE
+    Default: "main"
+  ResourcesPrecreated:
+    Type: String
+    Description: Whether lab infrastructure has been pre-provisioned
+    Default: "false"
+    AllowedValues:
+      - "false"
+      - "true"
+  AnalyticsEndpoint:
+    Type: String
+    Description: Analytics endpoint used for AWS events
+    Default: ""
+  CodeServerVersion:
+    Type: String
+    Description: Default code-server version to use
+    Default: "4.91.1"
+  AmiParameterStoreName:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
+  Environment:
+    Type: String
+    Description: For testing purposes only
+    Default: ""
+  EksClusterId:
+    Type: String
+    Description: Project ID for resource tagging
+    Default: "unreal-engine-5-dedicated-servers"
+Conditions:
+  IsKnownRegion: !Not
+    - !Equals
+      - !FindInMap [PrefixListID, !Ref "AWS::Region", PrefixList]
+      - ""
+Mappings:
+  PrefixListID:
+    # US Regions
+    us-east-1:
+      PrefixList: pl-3b927c52
+    us-east-2:
+      PrefixList: pl-b6a144df
+    us-west-1:
+      PrefixList: pl-4ea04527
+    us-west-2:
+      PrefixList: pl-82a045eb
+    # Europe Regions
+    eu-central-1:
+      PrefixList: pl-a3a144ca
+    eu-north-1:
+      PrefixList: pl-fab65393
+    eu-west-1:
+      PrefixList: pl-4fa04526
+    eu-west-2:
+      PrefixList: pl-93a247fa
+    eu-west-3:
+      PrefixList: pl-75b1541c
+    eu-south-1:
+      PrefixList: pl-1bfc5972
+    eu-south-2:
+      PrefixList: pl-01c1b570
+    eu-central-2:
+      PrefixList: pl-04ca1465
+    # Asia Pacific Regions
+    ap-northeast-1:
+      PrefixList: pl-58a04531
+    ap-northeast-2:
+      PrefixList: pl-22a6434b
+    ap-northeast-3:
+      PrefixList: pl-31a14658
+    ap-south-1:
+      PrefixList: pl-9aa247f3
+    ap-south-2:
+      PrefixList: pl-0ab16164
+    ap-southeast-1:
+      PrefixList: pl-31a34658
+    ap-southeast-2:
+      PrefixList: pl-b8a742d1
+    ap-southeast-3:
+      PrefixList: pl-05a2436e
+    ap-southeast-4:
+      PrefixList: pl-09a56470
+    ap-east-1:
+      PrefixList: pl-14b2577d
+    # Canada
+    ca-central-1:
+      PrefixList: pl-38a64351
+    ca-west-1:
+      PrefixList: pl-0ea16166
+    # South America
+    sa-east-1:
+      PrefixList: pl-5da64334
+    # Middle East
+    me-south-1:
+      PrefixList: pl-0ca54761
+    me-central-1:
+      PrefixList: pl-05c1b377
+    # Africa
+    af-south-1:
+      PrefixList: pl-0ab06164
+    # Israel
+    il-central-1:
+      PrefixList: pl-0fa54b66
+    # Default for unknown regions (empty string will be handled by condition)
+    default:
+      PrefixList: ""
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/24
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+  PublicSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  PublicSubnetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicSubnetRouteTable
+      SubnetId: !Ref PublicSubnet
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for IDE
+      SecurityGroupIngress:
+        - Description: Allow HTTP from CloudFront
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !If
+            - IsKnownRegion
+            - !FindInMap [PrefixListID, !Ref "AWS::Region", PrefixList]
+            - !FindInMap [PrefixListID, "us-east-1", PrefixList]  # Fallback to us-east-1
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+  UnrealEngineIdeLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName:
+            Fn::Join:
+              - ""
+              - - UnrealEngineIdeLambdaPolicy-
+                - Ref: AWS::Region
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                  - ssm:SendCommand
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: "*"
+  UnrealEngineIdeBootstrapInstanceLambda:
+    Type: Custom::UnrealEngineIdeBootstrapInstanceLambda
+    DependsOn:
+      - UnrealEngineIdeLambdaExecutionRole
+      - UnrealEngineIdeInstance
+      - UnrealEngineIdeSSMDocument
+      - UnrealEngineIdePassword
+      - UnrealEngineIdeCloudFrontDistribution
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - UnrealEngineIdeBootstrapInstanceLambdaFunction
+          - Arn
+      REGION:
+        Ref: AWS::Region
+      InstanceId:
+        Ref: UnrealEngineIdeInstance
+      SsmDocument:
+        Ref: UnrealEngineIdeSSMDocument
+  UnrealEngineIdeBootstrapInstanceLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt:
+          - UnrealEngineIdeLambdaExecutionRole
+          - Arn
+      Runtime: python3.12
+      Environment:
+        Variables:
+          DiskSize:
+            Ref: InstanceVolumeSize
+      MemorySize: 256
+      Timeout: "900"
+      Code:
+        ZipFile: |
+          from __future__ import print_function
+          import boto3
+          import json
+          import os
+          import time
+          import traceback
+          import cfnresponse
+          import logging
+          logger = logging.getLogger(__name__)
+
+          def lambda_handler(event, context):
+              print(event.values())
+              print('context: {}'.format(context))
+              responseData = {}
+
+              status = cfnresponse.SUCCESS
+              
+              if event['RequestType'] == 'Delete':
+                  responseData = {'Success': 'Custom Resource removed'}
+                  cfnresponse.send(event, context, status, responseData, 'CustomResourcePhysicalID')              
+              else:
+                  try:
+                      # Open AWS clients
+                      ssm = boto3.client('ssm')
+
+                      instance_id = event['ResourceProperties']['InstanceId']
+                      ssm_document = event['ResourceProperties']['SsmDocument']
+
+                      print('Waiting for instance to be ready...')
+                      time.sleep(30)  # Give instance time to fully initialize
+                      
+                      print('Sending SSM command...')
+                      
+                      # Retry logic for sending command
+                      max_retries = 3
+                      for attempt in range(max_retries):
+                          try:
+                              response = ssm.send_command(
+                                InstanceIds=[instance_id],
+                                DocumentName=ssm_document,
+                                TimeoutSeconds=1800)  # 30 minute timeout for command execution
+                              
+                              command_id = response['Command']['CommandId']
+                              print(f'Command sent successfully: {command_id}')
+                              break
+                          except Exception as e:
+                              if attempt < max_retries - 1:
+                                  print(f'Attempt {attempt + 1} failed, retrying...')
+                                  time.sleep(10)
+                              else:
+                                  raise e
+
+                      waiter = ssm.get_waiter('command_executed')
+
+                      waiter.wait(
+                        CommandId=command_id,
+                        InstanceId=instance_id,
+                        WaiterConfig={
+                          'Delay': 10,
+                          'MaxAttempts': 90  # Increased from 60 to handle longer bootstrap
+                        }
+                      )
+                      
+                      # Check command execution status
+                      result = ssm.get_command_invocation(
+                          CommandId=command_id,
+                          InstanceId=instance_id
+                      )
+                      
+                      if result['Status'] != 'Success':
+                          print(f"Command failed with status: {result['Status']}")
+                          print(f"Error output: {result.get('StandardErrorContent', 'No error output')}")
+                          raise Exception(f"SSM command failed with status: {result['Status']}")
+
+                      responseData = {'Success': 'Started bootstrapping for instance: '+instance_id}
+                      cfnresponse.send(event, context, status, responseData, 'CustomResourcePhysicalID')
+                      
+                  except Exception as e:
+                      status = cfnresponse.FAILED
+                      print(traceback.format_exc())
+                      responseData = {'Error': str(e)}
+                  finally:
+                      cfnresponse.send(event, context, status, responseData, 'CustomResourcePhysicalID')
+  UnrealEngineIdeSSMDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      DocumentFormat: YAML
+      Content:
+        schemaVersion: "2.2"
+        description: Bootstrap Unreal Engine 5 IDE Instance
+        mainSteps:
+          - action: aws:runShellScript
+            name: UnrealEngineIdeBootstrap
+            inputs:
+              timeoutSeconds: 1800
+              runCommand:
+                - !Sub |
+                  #!/bin/bash
+                  set -e
+                  
+                  # Error handling function
+                  error_exit() {
+                      echo "Error on line $1"
+                      exit 1
+                  }
+                  trap 'error_exit $LINENO' ERR
+
+                  echo "Starting bootstrap process..."
+                  
+                  # Install packages with retry logic
+                  install_packages() {
+                      local max_attempts=3
+                      local attempt=1
+                      while [ $attempt -le $max_attempts ]; do
+                          echo "Attempt $attempt to install packages..."
+                          if yum install -y git tar gzip vim nodejs npm make gcc g++ argon2; then
+                              echo "Package installation successful"
+                              return 0
+                          fi
+                          echo "Package installation failed, retrying..."
+                          sleep 5
+                          attempt=$((attempt + 1))
+                      done
+                      return 1
+                  }
+                  
+                  install_packages || error_exit $LINENO
+
+                  # Install Docker with retry
+                  echo "Installing Docker..."
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      if dnf install docker -y; then
+                          break
+                      fi
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+                  
+                  systemctl enable docker
+                  systemctl start docker
+                  usermod -a -G docker ec2-user
+
+                  # Install Docker Compose
+                  echo "Installing Docker Compose..."
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      if sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+                          -o /usr/local/bin/docker-compose; then
+                          # Make it executable
+                          sudo chmod +x /usr/local/bin/docker-compose
+                          # Verify installation
+                          if docker-compose version; then
+                              echo "Docker Compose installed successfully"
+                              break
+                          fi
+                      fi
+                      echo "Docker Compose installation attempt $attempt failed, retrying..."
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+
+                  export environment="${Environment}"
+
+                  # Download and source common environment
+                  echo "Setting up environment..."
+                  # Note: This project doesn't have the common-env.sh file, so we'll skip it
+                  echo "Skipping common-env.sh as it's not available in this repository"
+
+                  # Install Caddy
+                  echo "Installing Caddy..."
+                  dnf copr enable -y @caddy/caddy epel-9-x86_64 || error_exit $LINENO
+                  dnf install -y caddy || error_exit $LINENO
+                  systemctl enable --now caddy
+
+                  # Configure Caddy - wait for CloudFront to be available
+                  echo "Configuring Caddy..."
+                  tee /etc/caddy/Caddyfile <<EOF
+                  http://${UnrealEngineIdeCloudFrontDistribution.DomainName} {
+                    reverse_proxy 127.0.0.1:8889
+                  }
+                  EOF
+
+                  systemctl restart caddy
+
+                  # Setup custom prompt
+                  tee /etc/profile.d/custom_prompt.sh <<EOF
+                  #!/bin/sh
+                  export PROMPT_COMMAND='export PS1="\u:\w:$ "'
+                  EOF
+
+                  # Export environment variables
+                  export AWS_REGION="${AWS::Region}"
+                  export REPOSITORY_OWNER="${RepositoryOwner}"
+                  export REPOSITORY_NAME="${RepositoryName}"
+                  export REPOSITORY_REF="${RepositoryRef}"
+                  export RESOURCES_PRECREATED="${ResourcesPrecreated}"
+                  export ANALYTICS_ENDPOINT="${AnalyticsEndpoint}"
+
+                  # Run installer script
+                  echo "Running installer script..."
+                  # Note: This project doesn't have the installer.sh file, so we'll skip it
+                  echo "Skipping installer.sh as it's not available in this repository"
+
+                  # Setup user environment
+                  echo "Setting up user environment..."
+                  cat <<"EOT" | sudo -E -H -u ec2-user bash
+                  set -e
+                  
+                  # Error handling for user script
+                  error_exit() {
+                      echo "User script error on line $1"
+                      exit 1
+                  }
+                  trap 'error_exit $LINENO' ERR
+
+                  mkdir -p ~/environment
+
+                  # Install code-server if not already installed
+                  codeServer=$(dnf list installed code-server 2>/dev/null | wc -l)
+                  if [ "$codeServer" -eq "0" ]; then
+                      echo "Installing code-server..."
+                      curl -Ls -o /tmp/coder.rpm https://github.com/coder/code-server/releases/download/v${CodeServerVersion}/code-server-${CodeServerVersion}-amd64.rpm || {
+                          # Fallback to latest version if specific version fails
+                          echo "Specific version failed, trying latest..."
+                          curl -Ls -o /tmp/coder.rpm https://github.com/coder/code-server/releases/latest/download/code-server-amd64.rpm
+                      }
+                      sudo rpm -U "/tmp/coder.rpm"
+                      sudo systemctl enable --now code-server@ec2-user
+                  fi
+
+                  # Retrieve password with retry logic
+                  echo "Retrieving password from Secrets Manager..."
+                  max_attempts=5
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      PASSWORD_SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id "${UnrealEngineIdePassword.Id}" --query 'SecretString' --output text 2>/dev/null) && break
+                      echo "Attempt $attempt failed, retrying..."
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+                  
+                  if [ -z "$PASSWORD_SECRET_VALUE" ]; then
+                      echo "Failed to retrieve password from Secrets Manager"
+                      exit 1
+                  fi
+                  
+                  IDE_PASSWORD=$(echo "$PASSWORD_SECRET_VALUE" | jq -r '.password')
+                  HASHED_PASSWORD=$(echo -n "$IDE_PASSWORD" | argon2 saltItWithSalt -l 32 -e)
+
+                  # Configure code-server
+                  mkdir -p ~/.config/code-server
+                  touch ~/.config/code-server/config.yaml
+                  tee ~/.config/code-server/config.yaml <<EOF
+                  cert: false
+                  auth: password
+                  hashed-password: "$HASHED_PASSWORD"
+                  bind-addr: 127.0.0.1:8889
+                  EOF
+
+                  # Run setup scripts
+                  echo "Running setup scripts..."
+                  # Note: This project doesn't have the setup scripts, so we'll skip them
+                  echo "Skipping setup scripts as they're not available in this repository"
+
+                  # Clone repository in user environment
+                  echo "Cloning Unreal Engine 5 Dedicated Servers repository..."
+                  cd ~/environment
+                  if [ ! -d "${RepositoryName}" ]; then
+                      git clone https://github.com/${RepositoryOwner}/${RepositoryName}.git || error_exit $LINENO
+                      echo "Repository cloned successfully!"
+                  fi
+                  
+                  EOT
+
+                  # Restart code-server to apply configuration
+                  echo "Restarting code-server..."
+                  systemctl restart code-server@ec2-user
+                  
+                  echo "Bootstrap completed successfully!"
+  UnrealEngineIdeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - ssm.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ide-password
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                Resource:
+                  - !Ref UnrealEngineIdePassword
+              - Effect: Allow
+                Action: secretsmanager:ListSecrets
+                Resource: "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Path: "/"
+  UnrealEngineIamPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Roles:
+        - !Ref UnrealEngineIdeRole
+      ManagedPolicyName: !Sub ${AWS::StackName}-iam
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:GetRolePolicy
+              - iam:DetachRolePolicy
+              - iam:AttachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:DeleteRole
+              - iam:ListInstanceProfilesForRole
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:TagRole
+              - iam:PassRole
+              - sts:AssumeRole
+              - iam:DeleteServiceLinkedRole
+              - iam:GetServiceLinkedRoleDeletionStatus
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/unreal-engine-5-dedicated-servers*
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/fis*
+          - Effect: Allow
+            Action:
+              - iam:CreatePolicy
+              - iam:DeletePolicy
+              - iam:GetPolicyVersion
+              - iam:DeletePolicyVersion
+              - iam:ListPolicyVersions
+              - iam:TagPolicy
+              - iam:GetPolicy
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:policy/unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - iam:CreateInstanceProfile
+              - iam:DeleteInstanceProfile
+              - iam:GetInstanceProfile
+              - iam:TagInstanceProfile
+              - iam:RemoveRoleFromInstanceProfile
+              - iam:AddRoleToInstanceProfile
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:instance-profile/unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - iam:CreateUser
+              - iam:DeleteUser
+              - iam:TagUser
+              - iam:GetUser
+              - iam:ListGroupsForUser
+              - iam:AttachUserPolicy
+              - iam:DetachUserPolicy
+              - iam:ListAttachedUserPolicies
+              - iam:*SSHPublicKey
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:user/unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - iam:ListOpenIDConnectProviders
+              - iam:CreateOpenIDConnectProvider
+              - iam:DeleteOpenIDConnectProvider
+              - iam:TagOpenIDConnectProvider
+              - iam:GetOpenIDConnectProvider
+              - iam:GetRole
+              - iam:ListPolicies
+              - iam:ListRoles
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource: ["*"]
+            Condition:
+              StringEquals:
+                iam:AWSServiceName:
+                  - eks.amazonaws.com
+                  - eks-nodegroup.amazonaws.com
+                  - eks-fargate.amazonaws.com
+                  - guardduty.amazonaws.com
+                  - spot.amazonaws.com
+                  - fis.amazonaws.com
+                  - transitgateway.amazonaws.com
+                  - elasticloadbalancing.amazonaws.com
+  UnrealEngineBasePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Roles:
+        - !Ref UnrealEngineIdeRole
+      ManagedPolicyName: !Sub ${AWS::StackName}-base
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - eks:*
+              - ec2:CreateLaunchTemplate
+              - ec2:DeleteLaunchTemplate
+              - sts:GetCallerIdentity
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+            Resource:
+              - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/unreal-engine-5-dedicated-servers*
+            Condition:
+              "Null":
+                cloudformation:RoleARN: "true"
+          - Effect: Allow
+            Action:
+              - cloudformation:DeleteStack
+            Resource:
+              - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/unreal-engine-5-dedicated-servers*
+            Condition:
+              "Null":
+                cloudformation:RoleARN: "true"
+          - Effect: Allow
+            Action:
+              - cloudformation:Get*
+              - cloudformation:Describe*
+              - cloudformation:List*
+              - cloudformation:TagResource
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - autoscaling:UpdateAutoScalingGroup
+            Resource: ["*"]
+            Condition:
+              StringLike:
+                aws:ResourceTag/eks:cluster-name:
+                  - unreal-engine-5-dedicated-servers
+          - Effect: Allow
+            Action:
+              - autoscaling:Get*
+              - autoscaling:Describe*
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - ecr-public:GetAuthorizationToken
+              - sts:GetServiceBearerToken
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - kms:CreateKey
+              - kms:TagResource
+              - kms:ScheduleKeyDeletion
+              - kms:CreateGrant
+              - kms:EnableKeyRotation
+              - kms:GetKeyPolicy
+              - kms:GetKeyRotationStatus
+              - kms:ListResourceTags
+              - kms:PutKeyPolicy
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:EnableKeyRotation
+              - kms:Encrypt
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+            Resource: ["*"]
+            Condition:
+              StringLike:
+                kms:RequestAlias: ["alias/unreal-engine-5-dedicated-servers*", "alias/eks/unreal-engine-5-dedicated-servers*"]
+          - Effect: Allow
+            Action:
+              - kms:CreateAlias
+              - kms:DeleteAlias
+            Resource:
+              - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/unreal-engine-5-dedicated-servers*
+              - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/eks/unreal-engine-5-dedicated-servers*
+              - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*
+          - Effect: Allow
+            Action:
+              - kms:List*
+              - kms:Get*
+              - kms:Describe*
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: !Sub arn:aws:ssm:${AWS::Region}::parameter/aws/service/*
+  UnrealEngineEc2Policy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Roles:
+        - !Ref UnrealEngineIdeRole
+      ManagedPolicyName: !Sub ${AWS::StackName}-ec2
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ec2:Get*
+              - ec2:Describe*
+              - ec2:List*
+              - ec2:RunInstances
+              - ec2:ImportKeyPair
+              - ec2:DeleteKeyPair
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - ec2:StopInstances
+              - ec2:TerminateInstances
+              - ec2:ModifyInstanceAttribute
+            Resource: ["*"]
+            Condition:
+              StringLike:
+                aws:ResourceTag/env:
+                  - unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - ec2:CreateVpc
+              - ec2:CreateSubnet
+              - ec2:CreateRouteTable
+              - ec2:CreateRoute
+              - ec2:CreateInternetGateway
+              - ec2:AttachInternetGateway
+              - ec2:AssociateRouteTable
+              - ec2:ModifyVpcAttribute
+              - ec2:CreateSecurityGroup
+              - ec2:AllocateAddress
+              - ec2:ReleaseAddress
+              - ec2:DisassociateAddress
+              - ec2:CreateNetworkAclEntry
+              - ec2:DeleteNetworkAclEntry
+              - ec2:CreateNatGateway
+              - ec2:DeleteNatGateway
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+              - ec2:DescribeNetworkInterfaces
+              - ec2:CreateTransitGateway
+              - ec2:DeleteTransitGateway
+              - ec2:CreateTransitGatewayVpcAttachment
+              - ec2:DeleteTransitGatewayVpcAttachment
+              - ec2:CreateTransitGatewayRoute
+              - ec2:SearchTransitGatewayRoutes
+              - ec2:DeleteTransitGatewayRoute
+              - ec2:ModifyNetworkInterfaceAttribute
+              - ec2:CreateNetworkInterfacePermission
+              - ec2:AssignIpv6Addresses
+              - ec2:UnAssignIpv6Addresses
+              - ec2:ImportKeyPair
+              - ec2:CreateKeyPair
+              - ec2:DeleteKeyPair
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - ec2:DeleteVpc
+              - ec2:DeleteSubnet
+              - ec2:DeleteRouteTable
+              - ec2:DeleteRoute
+              - ec2:DeleteInternetGateway
+              - ec2:DetachInternetGateway
+              - ec2:DisassociateRouteTable
+              - ec2:ModifyVpcAttribute
+              - ec2:ModifySubnetAttribute
+              - ec2:AuthorizeSecurityGroup*
+              - ec2:UpdateSecurityGroupRuleDescriptionsEgress
+              - ec2:RevokeSecurityGroup*
+              - ec2:DeleteSecurityGroup
+              - ec2:ModifySecurityGroupRules
+              - ec2:UpdateSecurityGroupRuleDescriptionsIngress
+            Resource: ["*"]
+            Condition:
+              StringLike:
+                aws:ResourceTag/env:
+                  - unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - ec2:AuthorizeSecurityGroup*
+              - ec2:RevokeSecurityGroup*
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - ec2:CreateTags
+              - ec2:DeleteTags
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - ec2:AssociateVpcCidrBlock
+              - ec2:DisassociateVpcCidrBlock
+            Resource:
+              - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*
+            Condition:
+              StringLike:
+                aws:ResourceTag/env:
+                  - unreal-engine-5-dedicated-servers*
+  UnrealEngineCustomPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    DependsOn:
+      - UnrealEngineIdeRole
+    Properties:
+      Roles:
+        - !Ref UnrealEngineIdeRole
+      ManagedPolicyName: !Sub ${AWS::StackName}-custom
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - eks:*
+              - ec2:*
+              - iam:*
+              - ecr:*
+              - elasticloadbalancing:*
+              - autoscaling:*
+              - cloudwatch:*
+              - logs:*
+              - kms:*
+              - s3:*
+              - cloudformation:*
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource: "*"
+            Condition:
+              StringEquals:
+                iam:AWSServiceName: "eks.amazonaws.com"
+          - Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource: "*"
+            Condition:
+              StringEquals:
+                iam:AWSServiceName: "ec2scheduled.amazonaws.com"
+  UnrealEngineTroubleshootPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    DependsOn:
+      - UnrealEngineIdeRole
+    Properties:
+      Roles:
+        - !Ref UnrealEngineIdeRole
+      ManagedPolicyName: !Sub ${AWS::StackName}-troubleshoot
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:CreatePolicy
+              - iam:CreateRole
+              - iam:GetPolicy
+              - iam:GetRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:ListAttachedRolePolicies
+              - iam:TagPolicy
+              - iam:TagRole
+              - iam:GetPolicyVersion
+              - iam:ListRolePolicies
+              - iam:ListPolicyVersions
+              - iam:ListInstanceProfilesForRole
+              - iam:DeletePolicy
+              - iam:DeleteRole
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:policy/unreal-engine-5-dedicated-servers*
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - ec2:DeleteSecurityGroup
+              - ec2:DescribeSecurityGroups
+            Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+            Condition:
+              StringEquals:
+                'aws:ResourceTag/env': !Ref EksClusterId
+          - Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/unreal-engine-5-dedicated-servers*
+            Condition:
+              StringEquals:
+                iam:PassedToService:
+                  - ec2.amazonaws.com
+                  - eks.amazonaws.com
+          - Effect: Allow
+            Action:
+              - ecr:CreateRepository
+              - ecr:DeleteRepository
+              - ecr:TagResource
+              - ecr:DescribeRepositories
+              - ecr:ListTagsForResource
+              - ecr:SetRepositoryPolicy
+              - ecr:GetRepositoryPolicy
+              - ecr:DeleteRepositoryPolicy
+              - ecr:DescribeImages
+            Resource:
+              - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - kms:CreateKey
+              - kms:PutKeyPolicy
+              - kms:TagResource
+            Resource: ["*"]
+          - Effect: Allow
+            Action:
+              - kms:CreateAlias
+              - kms:DeleteAlias
+              - kms:DescribeKey
+              - kms:ListAliases
+            Resource:
+              - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*
+              - !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/unreal-engine-5-dedicated-servers*
+          - Effect: Allow
+            Action:
+              - ec2:TerminateInstances
+              - ec2:DescribeInstances
+            Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/eks:nodegroup-name: "unreal-engine-5-dedicated-servers"
+          - Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResources
+              - cloudformation:GetTemplate
+            Resource: 
+              - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/unreal-engine-5-dedicated-servers*/*
+  UnrealEngineSsmPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Roles:
+        - !Ref UnrealEngineIdeRole
+      ManagedPolicyName: !Sub ${AWS::StackName}-ssm
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: ssm:CreateActivation
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/unreal-engine-5-dedicated-servers-hybrid-node-role-*
+  UnrealEngineIdeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - Ref: UnrealEngineIdeRole
+  UnrealEngineIdeInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - UnrealEngineIdeInstanceProfile
+      - UnrealEngineIamPolicy
+      - UnrealEngineBasePolicy
+      - UnrealEngineEc2Policy
+      - UnrealEngineCustomPolicy
+      - UnrealEngineTroubleshootPolicy
+      - UnrealEngineSsmPolicy
+    Properties:
+      ImageId: !Ref AmiParameterStoreName
+      InstanceType: t3.medium
+      BlockDeviceMappings:
+        - Ebs:
+            VolumeSize: !Ref InstanceVolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+          DeviceName: /dev/xvda
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      IamInstanceProfile: !Ref UnrealEngineIdeInstanceProfile
+      Tags:
+        - Key: type
+          Value: unreal-engine-5-ide
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-instance
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Wait for instance to be fully ready
+          sleep 30
+          # Signal that the instance is ready for SSM
+          echo "Instance ready for SSM commands" > /tmp/instance-ready
+  UnrealEngineIdePassword:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}-password
+      GenerateSecretString:
+        ExcludeCharacters: "\"@/\\"
+        ExcludePunctuation: true
+        GenerateStringKey: password
+        IncludeSpace: false
+        PasswordLength: 32
+        SecretStringTemplate: '{"password":""}'
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+  UnrealEngineIdeCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        DefaultTTL: 86400
+        MaxTTL: 31536000
+        MinTTL: 1
+        Name: !Ref AWS::StackName
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: all
+          EnableAcceptEncodingGzip: False
+          EnableAcceptEncodingBrotli: False
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers:
+              - Accept-Charset
+              - Authorization
+              - Origin
+              - Accept
+              - Referer
+              - Host
+              - Accept-Language
+              - Accept-Datetime
+          QueryStringsConfig:
+            QueryStringBehavior: all
+  UnrealEngineIdeCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn:
+      - UnrealEngineIdeInstance
+    Properties:
+      DistributionConfig:
+        Enabled: True
+        HttpVersion: http2and3
+        CacheBehaviors:
+          - AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - PATCH
+              - POST
+              - DELETE
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            Compress: True
+            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+            TargetOriginId: !Sub CloudFront-${AWS::StackName}
+            ViewerProtocolPolicy: allow-all
+            PathPattern: "/proxy/*"
+          - AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - PATCH
+              - POST
+              - DELETE
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            Compress: True
+            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+            TargetOriginId: !Sub CloudFront-${AWS::StackName}
+            ViewerProtocolPolicy: allow-all
+            PathPattern: "/ws/*"
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - PATCH
+            - POST
+            - DELETE
+          CachePolicyId: !Ref UnrealEngineIdeCachePolicy
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+          TargetOriginId: !Sub CloudFront-${AWS::StackName}
+          ViewerProtocolPolicy: allow-all
+        Origins:
+          - DomainName: !GetAtt UnrealEngineIdeInstance.PublicDnsName
+            Id: !Sub CloudFront-${AWS::StackName}
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+  # Wait Handle for Bootstrap Completion
+  BootstrapWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  BootstrapWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: UnrealEngineIdeBootstrapInstanceLambda
+    Properties:
+      Handle: !Ref BootstrapWaitHandle
+      Timeout: "2400"  # 40 minutes timeout
+      Count: 0  # We're using the Lambda custom resource, so we don't need signals
+Outputs:
+  IdeUrl:
+    Description: URL to access the code-server IDE
+    Value: !Sub https://${UnrealEngineIdeCloudFrontDistribution.DomainName}
+  IdePasswordSecret:
+    Description: Link to AWS Secrets Manager console to retrieve the password
+    Value: !Sub
+      - https://console.aws.amazon.com/secretsmanager/secret?name=${SecretName}&region=${AWS::Region}
+      - SecretName: !Sub ${AWS::StackName}-password
+  IdePasswordSecretName:
+    Description: Name of the secret containing the IDE password
+    Value: !Sub ${AWS::StackName}-password
+  IdeRole:
+    Description: IAM Role ARN used by the IDE instance
+    Value: !Sub ${UnrealEngineIdeRole.Arn}
+  InstanceId:
+    Description: EC2 Instance ID of the IDE
+    Value: !Ref UnrealEngineIdeInstance
+  CloudFrontDistributionId:
+    Description: CloudFront Distribution ID
+    Value: !Ref UnrealEngineIdeCloudFrontDistribution
