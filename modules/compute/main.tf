@@ -5,6 +5,16 @@
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
+# Random password for Windows Administrator
+resource "random_password" "windows_admin" {
+  count   = var.admin_password == "" ? 1 : 0
+  length  = 16
+  special = true
+  upper   = true
+  lower   = true
+  numeric = true
+}
+
 # Data source for Windows AMI
 data "aws_ami" "windows_server" {
   most_recent = true
@@ -178,16 +188,17 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
     encrypted   = true
   }
 
-  user_data = templatefile("${path.module}/templates/user_data.ps1", {
-    unreal_engine_version = var.unreal_engine_version
-    unreal_engine_branch  = var.unreal_engine_branch
-    enable_ue5_editor     = var.enable_ue5_editor ? "true" : "false"
-    enable_ue5_server     = var.enable_ue5_server ? "true" : "false"
-    enable_ue5_linux      = var.enable_ue5_linux ? "true" : "false"
-    parallel_build_jobs   = var.parallel_build_jobs
-    build_timeout_hours   = var.build_timeout_hours
-    project_name          = var.project_name
-    environment           = var.environment
+  user_data = templatefile("${path.module}/templates/install-dcv-only.ps1", {
+    admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
+    # unreal_engine_version = var.unreal_engine_version
+    # unreal_engine_branch  = var.unreal_engine_branch
+    # enable_ue5_editor     = var.enable_ue5_editor ? "true" : "false"
+    # enable_ue5_server     = var.enable_ue5_server ? "true" : "false"
+    # enable_ue5_linux      = var.enable_ue5_linux ? "true" : "false"
+    # parallel_build_jobs   = var.parallel_build_jobs
+    # build_timeout_hours   = var.build_timeout_hours
+    # project_name          = var.project_name
+    # environment           = var.environment
   })
 
   metadata_options {
@@ -218,9 +229,10 @@ resource "aws_instance" "ue5_server" {
   }
 
   user_data = templatefile("${path.module}/templates/install-dcv-only.ps1", {
+    admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
     # unreal_engine_version = var.unreal_engine_version
     # unreal_engine_branch  = var.unreal_engine_branch
-    # enable_ue5_editor     = var.enable_ue5_editor ? "true" : "false"
+    # enable_ue5_editor     = var.enable_ue5_server ? "true" : "false"
     # enable_ue5_server     = var.enable_ue5_server ? "true" : "false"
     # enable_ue5_linux      = var.enable_ue5_linux ? "true" : "false"
     # parallel_build_jobs   = var.parallel_build_jobs

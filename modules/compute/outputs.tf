@@ -41,4 +41,10 @@ output "instance_state" {
 output "dcv_port" {
   description = "Port for NICE DCV service"
   value       = var.dcv_port
+}
+
+output "windows_admin_password" {
+  description = "Windows Administrator password"
+  value       = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
+  sensitive   = true
 } 

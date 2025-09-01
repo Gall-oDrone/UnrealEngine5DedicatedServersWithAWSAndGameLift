@@ -135,3 +135,10 @@ variable "dcv_port" {
   type        = number
   default     = 8443
 }
+
+variable "admin_password" {
+  description = "Windows Administrator password (leave empty for auto-generation)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}

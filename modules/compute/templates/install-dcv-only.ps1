@@ -5,6 +5,16 @@
 # Set execution policy to allow script execution
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Force
 
+# Set Windows Administrator password if provided
+if ("${admin_password}" -ne "") {
+    Write-Host "Setting Windows Administrator password..." -ForegroundColor Green
+    $securePassword = ConvertTo-SecureString -String "${admin_password}" -AsPlainText -Force
+    Set-LocalUser -Name "Administrator" -Password $securePassword
+    Write-Host "✅ Windows Administrator password set successfully" -ForegroundColor Green
+} else {
+    Write-Host "⚠️ No admin password provided, using default" -ForegroundColor Yellow
+}
+
 # DCV Configuration
 $DCVVersion = "2023.2-15773"
 $DCVSessionName = "ue5-session"
