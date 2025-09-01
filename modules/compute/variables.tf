@@ -129,3 +129,9 @@ variable "spot_max_price" {
   type        = string
   default     = ""
 }
+
+variable "dcv_port" {
+  description = "Port for NICE DCV service"
+  type        = number
+  default     = 8443
+}

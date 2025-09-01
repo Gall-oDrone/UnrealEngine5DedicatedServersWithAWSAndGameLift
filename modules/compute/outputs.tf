@@ -1,21 +1,21 @@
 output "instance_id" {
   description = "ID of the EC2 instance"
-  value       = aws_instance.ue5_server.id
+  value       = var.enable_spot_instance ? aws_spot_instance_request.ue5_server_spot[0].spot_instance_id : aws_instance.ue5_server[0].id
 }
 
 output "instance_public_ip" {
   description = "Public IP address of the EC2 instance"
-  value       = aws_instance.ue5_server.public_ip
+  value       = var.enable_spot_instance ? aws_spot_instance_request.ue5_server_spot[0].public_ip : aws_instance.ue5_server[0].public_ip
 }
 
 output "instance_private_ip" {
   description = "Private IP address of the EC2 instance"
-  value       = aws_instance.ue5_server.private_ip
+  value       = var.enable_spot_instance ? aws_spot_instance_request.ue5_server_spot[0].private_ip : aws_instance.ue5_server[0].private_ip
 }
 
 output "instance_arn" {
   description = "ARN of the EC2 instance"
-  value       = aws_instance.ue5_server.arn
+  value       = var.enable_spot_instance ? aws_spot_instance_request.ue5_server_spot[0].arn : aws_instance.ue5_server[0].arn
 }
 
 output "security_group_id" {
@@ -35,5 +35,10 @@ output "data_volume_id" {
 
 output "instance_state" {
   description = "Current state of the EC2 instance"
-  value       = aws_instance.ue5_server.instance_state
+  value       = var.enable_spot_instance ? aws_spot_instance_request.ue5_server_spot[0].instance_state : aws_instance.ue5_server[0].instance_state
+}
+
+output "dcv_port" {
+  description = "Port for NICE DCV service"
+  value       = var.dcv_port
 } 

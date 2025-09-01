@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 TERRAFORM_DIR="$PROJECT_ROOT/terraform"
 ENVIRONMENTS_DIR="$PROJECT_ROOT/environments"
 MODULES_DIR="$PROJECT_ROOT/modules"
@@ -83,6 +83,12 @@ EOF
 check_prerequisites() {
     print_status "Checking prerequisites..."
     
+    # Show current working directory and project structure
+    print_status "Current working directory: $(pwd)"
+    print_status "Script directory: $SCRIPT_DIR"
+    print_status "Project root: $PROJECT_ROOT"
+    print_status "Environments directory: $ENVIRONMENTS_DIR"
+    
     # Check if Terraform is installed
     if ! command -v terraform &> /dev/null; then
         print_error "Terraform is not installed. Please install Terraform >= 1.0"
@@ -107,10 +113,23 @@ check_prerequisites() {
 # Function to validate environment
 validate_environment() {
     local env="$1"
+    
+    print_status "Validating environment: $env"
+    print_status "Environments directory: $ENVIRONMENTS_DIR"
+    print_status "Looking for: $ENVIRONMENTS_DIR/$env"
+    
     if [[ ! -d "$ENVIRONMENTS_DIR/$env" ]]; then
-        print_error "Environment '$env' does not exist"
+        print_error "Environment '$env' does not exist at: $ENVIRONMENTS_DIR/$env"
+        print_status "Available environments:"
+        if [[ -d "$ENVIRONMENTS_DIR" ]]; then
+            ls -la "$ENVIRONMENTS_DIR" | tee -a "$LOG_FILE"
+        else
+            print_error "Environments directory not found: $ENVIRONMENTS_DIR"
+        fi
         return 1
     fi
+    
+    print_success "Environment '$env' validated successfully"
     return 0
 }
 
