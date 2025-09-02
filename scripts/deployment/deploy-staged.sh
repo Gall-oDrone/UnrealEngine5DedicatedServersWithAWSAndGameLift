@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Staged Deployment Script for Unreal Engine 5 Infrastructure with NiceDCV
-# This script deploys the infrastructure in stages with proper verification
+# Enhanced Staged Deployment Script with Better Progress Tracking
+# This script deploys the infrastructure with detailed progress monitoring
 
 set -euo pipefail
 
@@ -10,6 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Script configuration
@@ -37,6 +38,10 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_progress() {
+    echo -e "${CYAN}[PROGRESS]${NC} $1"
 }
 
 # Function to show usage
@@ -137,49 +142,114 @@ wait_for_instance() {
     return 1
 }
 
-# Function to wait for Windows user data to complete
-wait_for_userdata() {
+# Enhanced function to monitor user data progress
+monitor_userdata_progress() {
     local instance_id=$1
-    local max_wait=${2:-1800}  # Default 30 minutes for UE5 compilation
+    local max_wait=${2:-2400}  # Default 40 minutes for full installation
     
     local elapsed=0
-    local interval=30
+    local interval=20
+    local last_progress=""
     
-    print_info "⏳ Waiting for Windows user data script to complete (this may take 20-30 minutes)..."
-    print_info "The script is installing Visual Studio, Unreal Engine dependencies, and NiceDCV..."
+    print_info "⏳ Monitoring Windows setup progress..."
+    print_info "Installation stages: Prerequisites → DCV Installation → Configuration → Completion"
     
     while [ $elapsed -lt $max_wait ]; do
-        # Try to get the status from CloudWatch logs or SSM
-        # For Windows, we can check if the setup completion file exists
-        
-        # Check if we can reach the instance via SSM
-        if aws ssm describe-instance-information \
+        # Wait for SSM to be available
+        local ssm_status=$(aws ssm describe-instance-information \
             --filters "Key=InstanceIds,Values=$instance_id" \
             --query 'InstanceInformationList[0].PingStatus' \
-            --output text 2>/dev/null | grep -q "Online"; then
-            
-            print_info "Instance is online via SSM. Checking completion status..."
-            
-            # Try to check if setup is complete using SSM
-            completion_check=$(aws ssm send-command \
+            --output text 2>/dev/null || echo "Offline")
+        
+        if [[ "$ssm_status" == "Online" ]]; then
+            # Check multiple progress markers
+            local progress_check=$(aws ssm send-command \
                 --instance-ids "$instance_id" \
                 --document-name "AWS-RunPowerShellScript" \
-                --parameters 'commands=["Test-Path C:\logs\setup-complete.txt"]' \
+                --parameters 'commands=[
+                    "$stages = @()",
+                    "if (Test-Path \"C:\\logs\\stage-prerequisites.txt\") { $stages += \"Prerequisites\" }",
+                    "if (Test-Path \"C:\\logs\\stage-dcv-download.txt\") { $stages += \"DCV-Download\" }",
+                    "if (Test-Path \"C:\\logs\\stage-dcv-install.txt\") { $stages += \"DCV-Install\" }",
+                    "if (Test-Path \"C:\\logs\\stage-dcv-config.txt\") { $stages += \"DCV-Config\" }",
+                    "if (Test-Path \"C:\\logs\\dcv-install-complete.txt\") { $stages += \"Complete\" }",
+                    "if ($stages.Count -eq 0) { \"Starting\" } else { $stages -join \",\" }"
+                ]' \
                 --query 'Command.CommandId' \
                 --output text 2>/dev/null || echo "")
             
-            if [ -n "$completion_check" ]; then
+            if [ -n "$progress_check" ]; then
                 sleep 5
-                result=$(aws ssm get-command-invocation \
-                    --command-id "$completion_check" \
+                local current_progress=$(aws ssm get-command-invocation \
+                    --command-id "$progress_check" \
                     --instance-id "$instance_id" \
                     --query 'StandardOutputContent' \
-                    --output text 2>/dev/null || echo "False")
+                    --output text 2>/dev/null || echo "Unknown")
                 
-                if [[ "$result" == *"True"* ]]; then
-                    print_success "✅ User data script completed successfully!"
+                # Only print if progress changed
+                if [[ "$current_progress" != "$last_progress" ]]; then
+                    print_progress "Current stage: $current_progress"
+                    last_progress="$current_progress"
+                fi
+                
+                # Check if complete
+                if [[ "$current_progress" == *"Complete"* ]]; then
+                    print_success "✅ Setup completed successfully!"
+                    
+                    # Get installation summary
+                    print_info "Retrieving installation summary..."
+                    local summary_check=$(aws ssm send-command \
+                        --instance-ids "$instance_id" \
+                        --document-name "AWS-RunPowerShellScript" \
+                        --parameters 'commands=["Get-Content C:\\logs\\dcv-install-complete.txt -ErrorAction SilentlyContinue"]' \
+                        --query 'Command.CommandId' \
+                        --output text 2>/dev/null || echo "")
+                    
+                    if [ -n "$summary_check" ]; then
+                        sleep 5
+                        local summary=$(aws ssm get-command-invocation \
+                            --command-id "$summary_check" \
+                            --instance-id "$instance_id" \
+                            --query 'StandardOutputContent' \
+                            --output text 2>/dev/null || echo "")
+                        
+                        if [ -n "$summary" ]; then
+                            echo ""
+                            echo "$summary"
+                            echo ""
+                        fi
+                    fi
+                    
                     return 0
                 fi
+            fi
+            
+            # Check for errors in log
+            if [ $((elapsed % 60)) -eq 0 ]; then
+                local error_check=$(aws ssm send-command \
+                    --instance-ids "$instance_id" \
+                    --document-name "AWS-RunPowerShellScript" \
+                    --parameters 'commands=["Get-Content C:\\logs\\dcv-install.log -Tail 5 -ErrorAction SilentlyContinue | Select-String -Pattern \"ERROR\",\"Failed\""]' \
+                    --query 'Command.CommandId' \
+                    --output text 2>/dev/null || echo "")
+                
+                if [ -n "$error_check" ]; then
+                    sleep 5
+                    local errors=$(aws ssm get-command-invocation \
+                        --command-id "$error_check" \
+                        --instance-id "$instance_id" \
+                        --query 'StandardOutputContent' \
+                        --output text 2>/dev/null || echo "")
+                    
+                    if [ -n "$errors" ] && [[ "$errors" != "null" ]]; then
+                        print_warning "Errors detected in installation log:"
+                        echo "$errors"
+                    fi
+                fi
+            fi
+        else
+            if [ $((elapsed % 30)) -eq 0 ]; then
+                print_info "Waiting for SSM agent to come online (status: $ssm_status)..."
             fi
         fi
         
@@ -187,14 +257,36 @@ wait_for_userdata() {
         elapsed=$((elapsed + interval))
         
         # Progress updates
-        if [ $((elapsed % 120)) -eq 0 ]; then  # Every 2 minutes
-            print_info "Still waiting for setup to complete... ($((elapsed / 60)) minutes elapsed)"
-            print_info "Setup stages: Chocolatey → Visual Studio → UE5 Prerequisites → NiceDCV → Completion"
+        if [ $((elapsed % 120)) -eq 0 ]; then
+            print_info "Still monitoring setup... ($((elapsed / 60)) minutes elapsed)"
         fi
     done
     
-    print_warning "Timeout waiting for user data completion after $((max_wait / 60)) minutes"
-    print_warning "The setup might still be running. Check C:\\logs\\ue5-setup.log on the instance."
+    print_warning "Timeout after $((max_wait / 60)) minutes"
+    print_warning "Setup might still be running. Attempting to get latest status..."
+    
+    # Try to get final status
+    local final_check=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters 'commands=["Get-Content C:\\logs\\dcv-install.log -Tail 20 -ErrorAction SilentlyContinue"]' \
+        --query 'Command.CommandId' \
+        --output text 2>/dev/null || echo "")
+    
+    if [ -n "$final_check" ]; then
+        sleep 5
+        local final_log=$(aws ssm get-command-invocation \
+            --command-id "$final_check" \
+            --instance-id "$instance_id" \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null || echo "")
+        
+        if [ -n "$final_log" ]; then
+            print_info "Last 20 lines of installation log:"
+            echo "$final_log"
+        fi
+    fi
+    
     return 1
 }
 
@@ -225,41 +317,6 @@ test_dcv_connectivity() {
     fi
 }
 
-# Function to get RDP password
-get_rdp_password() {
-    local instance_id=$1
-    local key_path=$2
-    
-    print_info "Retrieving Windows Administrator password..."
-    
-    if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
-        print_warning "No key pair specified or key file not found."
-        print_info "Password will be auto-generated. Check AWS Console for password."
-        return
-    fi
-    
-    # Get encrypted password
-    encrypted_password=$(aws ec2 get-password-data \
-        --instance-id "$instance_id" \
-        --query 'PasswordData' \
-        --output text 2>/dev/null || echo "")
-    
-    if [ -z "$encrypted_password" ]; then
-        print_warning "Password not yet available. It may take up to 4 minutes after launch."
-        return
-    fi
-    
-    # Decrypt password
-    password=$(echo "$encrypted_password" | base64 -d | openssl rsautl -decrypt -inkey "$key_path" 2>/dev/null || echo "")
-    
-    if [ -n "$password" ]; then
-        print_success "Administrator password retrieved successfully"
-        echo "Password: $password"
-    else
-        print_warning "Could not decrypt password. Check your key file."
-    fi
-}
-
 # Main deployment stages
 deploy_infrastructure() {
     cd "$TERRAFORM_DIR"
@@ -278,7 +335,7 @@ deploy_infrastructure() {
     print_success "Network infrastructure deployed"
     
     # Stage 2: Compute Infrastructure
-    print_info "📦 Stage 2: Deploying compute infrastructure (EC2 instance with UE5 and DCV setup)..."
+    print_info "📦 Stage 2: Deploying compute infrastructure (EC2 instance with DCV setup)..."
     
     terraform apply -target=module.compute $apply_args
     
@@ -300,8 +357,8 @@ deploy_infrastructure() {
     # Wait for instance to be ready
     wait_for_instance "$INSTANCE_ID"
     
-    # Wait for user data to complete (includes UE5 and DCV setup)
-    if wait_for_userdata "$INSTANCE_ID"; then
+    # Monitor user data progress with enhanced tracking
+    if monitor_userdata_progress "$INSTANCE_ID"; then
         print_success "✅ Instance setup completed!"
     else
         print_warning "⚠️ Setup might still be running. Continuing..."
@@ -319,8 +376,8 @@ deploy_infrastructure() {
         print_info "📦 Stage 5: Verifying DCV connectivity..."
         
         # Wait a bit for DCV to fully start
-        print_info "Waiting 60 seconds for DCV services to fully initialize..."
-        sleep 60
+        print_info "Waiting 30 seconds for DCV services to fully initialize..."
+        sleep 30
         
         if test_dcv_connectivity "$PUBLIC_IP"; then
             print_success "✅ DCV is accessible!"
@@ -330,31 +387,7 @@ deploy_infrastructure() {
     fi
 }
 
-# Function to destroy infrastructure
-destroy_infrastructure() {
-    cd "$TERRAFORM_DIR"
-    
-    print_warning "⚠️ WARNING: This will destroy all infrastructure!"
-    
-    if [[ "$AUTO_APPROVE" != true ]]; then
-        read -p "Are you sure you want to destroy the infrastructure? (yes/no): " confirm
-        if [[ "$confirm" != "yes" ]]; then
-            print_info "Destruction cancelled"
-            exit 0
-        fi
-    fi
-    
-    local destroy_args=""
-    if [[ "$AUTO_APPROVE" == true ]]; then
-        destroy_args="-auto-approve"
-    fi
-    
-    terraform destroy $destroy_args
-    
-    print_success "Infrastructure destroyed"
-}
-
-# Parse command line arguments
+# Parse command line arguments (rest of the script remains the same...)
 DESTROY=false
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -389,27 +422,31 @@ done
 
 # Main execution
 main() {
-    print_info "🚀 Starting Unreal Engine 5 infrastructure deployment with NiceDCV"
+    print_info "🚀 Starting infrastructure deployment with NiceDCV"
     print_info "Environment: $ENVIRONMENT"
     
     # Check prerequisites
     check_prerequisites
     
     if [[ "$DESTROY" == true ]]; then
-        destroy_infrastructure
+        cd "$TERRAFORM_DIR"
+        local destroy_args=""
+        if [[ "$AUTO_APPROVE" == true ]]; then
+            destroy_args="-auto-approve"
+        fi
+        terraform destroy $destroy_args
+        print_success "Infrastructure destroyed"
     else
         # Deploy infrastructure
         deploy_infrastructure
         
-        # Get final outputs
+        # Display connection information
         cd "$TERRAFORM_DIR"
         print_success "✅ Deployment complete!"
         
         INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || echo "")
         PUBLIC_IP=$(terraform output -raw instance_public_ip 2>/dev/null || echo "")
-        KEY_NAME=$(terraform output -raw key_pair_name 2>/dev/null || echo "")
         
-        # Display connection information
         print_info "═══════════════════════════════════════════════════════════════"
         print_info "Connection Information:"
         print_info "═══════════════════════════════════════════════════════════════"
@@ -417,71 +454,17 @@ main() {
         print_success "Instance ID: $INSTANCE_ID"
         print_success "Public IP: $PUBLIC_IP"
         echo ""
-        print_info "📱 Remote Desktop (RDP):"
-        echo "  - Address: $PUBLIC_IP"
-        echo "  - Port: 3389"
-        echo "  - Username: Administrator"
-        echo ""
         print_info "🖥️ NICE DCV (High-performance remote desktop):"
         echo "  - URL: https://$PUBLIC_IP:8443"
         echo "  - Session: ue5-session"
+        echo "  - Username: Administrator"
         echo "  - Note: Accept the self-signed certificate warning"
         echo ""
-        print_info "📂 Unreal Engine Location:"
-        echo "  - Path: C:\\UnrealEngine\\UnrealEngine"
-        echo "  - Editor: C:\\UnrealEngine\\UnrealEngine\\Engine\\Binaries\\Win64\\UnrealEditor.exe"
-        echo "  - Logs: C:\\logs\\"
-        echo ""
-        print_info "🔐 Getting Administrator Password:"
-        
-        # Try to get password if key is available
-        if [ -n "$KEY_NAME" ]; then
-            KEY_PATH="~/.ssh/${KEY_NAME}.pem"
-            KEY_PATH=$(eval echo "$KEY_PATH")
-            if [ -f "$KEY_PATH" ]; then
-                get_rdp_password "$INSTANCE_ID" "$KEY_PATH"
-            else
-                echo "  1. Go to EC2 Console"
-                echo "  2. Right-click instance $INSTANCE_ID"
-                echo "  3. Select 'Get Windows password'"
-                echo "  4. Upload your private key or wait for auto-generated password"
-            fi
-        else
-            echo "  1. Go to EC2 Console"
-            echo "  2. Right-click instance $INSTANCE_ID"
-            echo "  3. Select 'Get Windows password'"
-            echo "  4. Wait ~4 minutes after instance launch"
-        fi
+        print_info "📱 Remote Desktop (RDP) - Alternative:"
+        echo "  - Address: $PUBLIC_IP:3389"
+        echo "  - Username: Administrator"
         echo ""
         print_info "═══════════════════════════════════════════════════════════════"
-        
-        # Provide helpful commands
-        print_info "📝 Useful AWS CLI commands:"
-        echo "  - Check instance: aws ec2 describe-instances --instance-ids $INSTANCE_ID"
-        echo "  - Get password: aws ec2 get-password-data --instance-id $INSTANCE_ID"
-        echo "  - Check logs: aws ssm send-command --instance-ids $INSTANCE_ID --document-name \"AWS-RunPowerShellScript\" --parameters 'commands=[\"Get-Content C:\\logs\\ue5-setup.log -Tail 50\"]'"
-        echo ""
-        print_info "💡 Tips:"
-        echo "  - Initial setup takes 20-30 minutes (Visual Studio, UE5, DCV installation)"
-        echo "  - Check C:\\logs\\setup-complete.txt to verify completion"
-        echo "  - DCV provides better performance than standard RDP for graphics"
-        echo "  - Consider using spot instances for cost savings (up to 90% discount)"
-        echo ""
-        
-        # Optional: Open DCV URL in browser
-        if [[ "$SKIP_DCV_CHECK" != true ]]; then
-            read -p "Do you want to open DCV in your browser? (y/n) " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                if command -v xdg-open &> /dev/null; then
-                    xdg-open "https://$PUBLIC_IP:8443"
-                elif command -v open &> /dev/null; then
-                    open "https://$PUBLIC_IP:8443"
-                else
-                    print_info "Please open https://$PUBLIC_IP:8443 in your browser"
-                fi
-            fi
-        fi
     fi
 }
 
