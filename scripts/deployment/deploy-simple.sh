@@ -119,21 +119,37 @@ wait_for_instance() {
             --query 'Reservations[0].Instances[0].State.Name' \
             --output text 2>/dev/null || echo "unknown")
         
-        status_checks=$(aws ec2 describe-instances \
+        status_checks=$(aws ec2 describe-instance-status \
             --instance-ids "$instance_id" \
             --query 'InstanceStatuses[0].InstanceStatus.Status' \
             --output text 2>/dev/null || echo "unknown")
         
-        if [[ "$instance_state" == "running" ]] && [[ "$status_checks" == "ok" ]]; then
-            print_success "Instance $instance_id is ready!"
-            return 0
+        # Check if instance is running and status checks are available
+        if [[ "$instance_state" == "running" ]]; then
+            if [[ "$status_checks" == "ok" ]]; then
+                print_success "Instance $instance_id is ready!"
+                return 0
+            elif [[ "$status_checks" == "unknown" ]]; then
+                # Status checks might not be available yet, wait a bit more
+                if [ $elapsed -gt 300 ]; then  # After 5 minutes, consider it ready anyway
+                    print_warning "Status checks not available after 5 minutes, assuming instance is ready"
+                    return 0
+                fi
+            elif [[ "$status_checks" == "initializing" ]]; then
+                # Instance is still initializing, continue waiting
+                if [ $((elapsed % 60)) -eq 0 ]; then
+                    print_info "Instance is initializing, please wait... ($elapsed seconds elapsed)"
+                fi
+            fi
         fi
         
         sleep $interval
         elapsed=$((elapsed + interval))
         
         if [ $((elapsed % 60)) -eq 0 ]; then
-            print_info "Instance state: $instance_state, Status checks: $status_checks ($elapsed seconds elapsed)"
+            if [[ "$status_checks" == "unknown" ]]; then
+                print_info "Instance state: $instance_state, Status checks: Not available yet ($elapsed seconds elapsed)"
+            fi
         fi
     done
     
