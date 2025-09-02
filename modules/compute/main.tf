@@ -168,6 +168,36 @@ resource "aws_iam_role_policy" "s3_policy" {
   })
 }
 
+# Add after line 124 (the CloudWatch policy)
+resource "aws_iam_role_policy" "ssm_policy" {
+  name = "${var.project_name}-ssm-policy"
+  role = aws_iam_role.ec2_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:UpdateInstanceInformation",
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel",
+          "ec2messages:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Also attach the AWS managed policy
+resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 # Spot Instance Request (if spot is enabled)
 resource "aws_spot_instance_request" "ue5_server_spot" {
   count = var.enable_spot_instance ? 1 : 0
@@ -188,17 +218,8 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
     encrypted   = true
   }
 
-  user_data = templatefile("${path.module}/templates/install-dcv-only.ps1", {
-    admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
-    # unreal_engine_version = var.unreal_engine_version
-    # unreal_engine_branch  = var.unreal_engine_branch
-    # enable_ue5_editor     = var.enable_ue5_editor ? "true" : "false"
-    # enable_ue5_server     = var.enable_ue5_server ? "true" : "false"
-    # enable_ue5_linux      = var.enable_ue5_linux ? "true" : "false"
-    # parallel_build_jobs   = var.parallel_build_jobs
-    # build_timeout_hours   = var.build_timeout_hours
-    # project_name          = var.project_name
-    # environment           = var.environment
+  user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
+  admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
   })
 
   metadata_options {
@@ -228,17 +249,8 @@ resource "aws_instance" "ue5_server" {
     encrypted   = true
   }
 
-  user_data = templatefile("${path.module}/templates/install-dcv-only.ps1", {
-    admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
-    # unreal_engine_version = var.unreal_engine_version
-    # unreal_engine_branch  = var.unreal_engine_branch
-    # enable_ue5_editor     = var.enable_ue5_server ? "true" : "false"
-    # enable_ue5_server     = var.enable_ue5_server ? "true" : "false"
-    # enable_ue5_linux      = var.enable_ue5_linux ? "true" : "false"
-    # parallel_build_jobs   = var.parallel_build_jobs
-    # build_timeout_hours   = var.build_timeout_hours
-    # project_name          = var.project_name
-    # environment           = var.environment
+  user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
+  admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
   })
 
   metadata_options {
