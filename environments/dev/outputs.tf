@@ -76,6 +76,13 @@ output "connection_info" {
   }
 }
 
+# Windows Administrator password
+output "windows_admin_password" {
+  description = "Windows Administrator password for the EC2 instance"
+  value       = module.compute.windows_admin_password
+  sensitive   = true
+}
+
 # Cost estimation
 output "estimated_monthly_cost" {
   description = "Estimated monthly cost for the infrastructure"
