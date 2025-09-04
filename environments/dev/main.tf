@@ -92,6 +92,8 @@ module "compute" {
   unreal_engine_branch  = var.unreal_engine_branch
   enable_s3_access      = var.enable_s3_access
   s3_bucket_name        = var.s3_bucket_name
+  root_volume_snapshot_id = var.root_volume_snapshot_id
+  data_volume_snapshot_id = var.data_volume_snapshot_id
   common_tags           = local.common_tags
 }
 

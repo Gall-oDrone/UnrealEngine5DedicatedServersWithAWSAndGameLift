@@ -179,7 +179,17 @@ resource "aws_iam_role_policy" "ssm_policy" {
       {
         Effect = "Allow"
         Action = [
+          # Core SSM permissions
           "ssm:UpdateInstanceInformation",
+          "ssm:ListAssociations",
+          "ssm:ListInstanceAssociations",
+          "ssm:DescribeInstanceInformation",
+          "ssm:DescribeDocumentParameters",
+          "ssm:DescribeDocument",
+          "ssm:GetDocument",
+          "ssm:ListDocuments",
+          
+          # SSM Messages for Session Manager
           "ssmmessages:CreateControlChannel",
           "ssmmessages:CreateDataChannel",
           "ssmmessages:OpenControlChannel",
@@ -212,10 +222,13 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
   spot_price = var.spot_max_price
   spot_type  = "one-time"
   
-  root_block_device {
-    volume_type = "gp3"
-    volume_size = var.root_volume_size
-    encrypted   = true
+  dynamic "root_block_device" {
+    for_each = var.root_volume_snapshot_id == "" ? [1] : []
+    content {
+      volume_type = "gp3"
+      volume_size = var.root_volume_size
+      encrypted   = true
+    }
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
@@ -243,10 +256,13 @@ resource "aws_instance" "ue5_server" {
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
   key_name               = var.key_pair_name
 
-  root_block_device {
-    volume_type = "gp3"
-    volume_size = var.root_volume_size
-    encrypted   = true
+  dynamic "root_block_device" {
+    for_each = var.root_volume_snapshot_id == "" ? [1] : []
+    content {
+      volume_type = "gp3"
+      volume_size = var.root_volume_size
+      encrypted   = true
+    }
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
@@ -265,12 +281,28 @@ resource "aws_instance" "ue5_server" {
   depends_on = [aws_iam_role_policy.cloudwatch_policy]
 }
 
+# EBS Volume for root (if using snapshot)
+resource "aws_ebs_volume" "root_volume" {
+  count = var.root_volume_snapshot_id != "" ? 1 : 0
+  
+  availability_zone = var.availability_zone
+  type              = "gp3"
+  size              = var.root_volume_size
+  encrypted         = true
+  snapshot_id       = var.root_volume_snapshot_id
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-root-volume"
+  })
+}
+
 # EBS Volume for data
 resource "aws_ebs_volume" "data_volume" {
   availability_zone = var.availability_zone
   type              = "gp3"
   size              = var.data_volume_size
   encrypted         = true
+  snapshot_id       = var.data_volume_snapshot_id != "" ? var.data_volume_snapshot_id : null
 
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-data-volume"
@@ -290,5 +322,21 @@ resource "aws_volume_attachment" "data_volume_attachment_spot" {
   count       = var.enable_spot_instance ? 1 : 0
   device_name = "/dev/sdf"
   volume_id   = aws_ebs_volume.data_volume.id
+  instance_id = aws_spot_instance_request.ue5_server_spot[0].spot_instance_id
+}
+
+# Root Volume Attachment for on-demand instance (if using snapshot)
+resource "aws_volume_attachment" "root_volume_attachment" {
+  count       = var.enable_spot_instance ? 0 : (var.root_volume_snapshot_id != "" ? 1 : 0)
+  device_name = "/dev/sda1"
+  volume_id   = aws_ebs_volume.root_volume[0].id
+  instance_id = aws_instance.ue5_server[0].id
+}
+
+# Root Volume Attachment for spot instance (if using snapshot)
+resource "aws_volume_attachment" "root_volume_attachment_spot" {
+  count       = var.enable_spot_instance ? (var.root_volume_snapshot_id != "" ? 1 : 0) : 0
+  device_name = "/dev/sda1"
+  volume_id   = aws_ebs_volume.root_volume[0].id
   instance_id = aws_spot_instance_request.ue5_server_spot[0].spot_instance_id
 }

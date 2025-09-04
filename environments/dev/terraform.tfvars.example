@@ -41,4 +41,10 @@ log_retention_days  = 30
 enable_memory_monitoring = false
 enable_disk_monitoring   = false
 enable_sns_notifications = false
-notification_email       = "your-email@example.com"  # Required if enable_sns_notifications = true 
+notification_email       = "your-email@example.com"  # Required if enable_sns_notifications = true
+
+# Snapshot Configuration (Optional)
+# If you have existing snapshots, specify their IDs to create volumes from them
+# Leave empty to create new volumes
+root_volume_snapshot_id = ""  # e.g., "snap-0123456789abcdef0"
+data_volume_snapshot_id = ""  # e.g., "snap-0fedcba9876543210" 

@@ -142,3 +142,15 @@ variable "admin_password" {
   default     = ""
   sensitive   = true
 }
+
+variable "root_volume_snapshot_id" {
+  description = "Snapshot ID for root volume (leave empty to create new volume)"
+  type        = string
+  default     = ""
+}
+
+variable "data_volume_snapshot_id" {
+  description = "Snapshot ID for data volume (leave empty to create new volume)"
+  type        = string
+  default     = ""
+}

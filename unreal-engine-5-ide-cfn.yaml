@@ -374,6 +374,37 @@ Resources:
                   
                   install_packages || error_exit $LINENO
 
+                  # Install Session Manager Plugin for Amazon Linux 2023
+                  echo "Installing Session Manager Plugin..."
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      # For Amazon Linux 2023 (AL2023)
+                      if curl -o /tmp/session-manager-plugin.rpm "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm"; then
+                          if sudo yum install -y /tmp/session-manager-plugin.rpm; then
+                              # Verify installation
+                              if session-manager-plugin --version; then
+                                  echo "Session Manager Plugin installed successfully"
+                                  rm -f /tmp/session-manager-plugin.rpm
+                                  break
+                              fi
+                          fi
+                      fi
+                      echo "Session Manager Plugin installation attempt $attempt failed, retrying..."
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+                
+                  # Verify SSM Agent is installed and running (should be pre-installed on AL2023)
+                  echo "Checking SSM Agent status..."
+                  if systemctl is-active amazon-ssm-agent; then
+                      echo "SSM Agent is running"
+                  else
+                      echo "Starting SSM Agent..."
+                      sudo systemctl enable amazon-ssm-agent
+                      sudo systemctl start amazon-ssm-agent
+                  fi
+
                   # Install Docker with retry
                   echo "Installing Docker..."
                   max_attempts=3
