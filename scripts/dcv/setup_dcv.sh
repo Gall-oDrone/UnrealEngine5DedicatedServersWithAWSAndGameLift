@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# AWS DCV (Desktop and Cloud Visualization) Setup Script for Windows EC2
-# This script follows the AWS DCV documentation methodology for Windows Server instances
+# AWS DCV (Desktop and Cloud Visualization) Setup Script for Windows EC2 via SSM
+# This script provides SSM commands to deploy and execute the PowerShell DCV installation script
 # Reference: https://docs.aws.amazon.com/pdfs/dcv/latest/adminguide/dcv-ag.pdf#setting-up-installing
 
 set -e  # Exit on any error
@@ -17,10 +17,16 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 LOG_FILE="$SCRIPT_DIR/dcv_setup.log"
-DCV_VERSION="2023.2-15773"
-DCV_DOWNLOAD_URL="https://d1uj6qtbmh3dt5.cloudfront.net/2023.2/Servers/nice-dcv-server-${DCV_VERSION}.x86_64.msi"
-DCV_CLIENT_URL="https://d1uj6qtbmh3dt5.cloudfront.net/2023.2/Clients/nice-dcv-viewer-${DCV_VERSION}.x86_64.msi"
-DCV_AGENT_URL="https://d1uj6qtbmh3dt5.cloudfront.net/2023.2/Agents/nice-dcv-gl-agent-${DCV_VERSION}.x86_64.msi"
+
+# DCV Configuration (aligned with dcv_install.ps1)
+DCV_SERVER_VERSION="2024.0-17979"
+DCV_SESSION_NAME="ue5-session"
+DCV_PORT="8443"
+DCV_SESSION_OWNER="Administrator"
+
+# PowerShell script URLs (update with your actual repository)
+POWERSHELL_SCRIPT_URL="https://raw.githubusercontent.com/YOUR_REPO/dcv_install.ps1"
+POWERSHELL_SCRIPT_NAME="dcv_install.ps1"
 
 # Function to log messages
 log_message() {
@@ -37,650 +43,369 @@ print_status() {
     echo -e "${color}${message}${NC}"
 }
 
-# Function to check if running on Windows
-check_windows() {
-    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
-        print_status $GREEN "Detected Windows environment"
-        return 0
-    else
-        print_status $RED "This script is designed for Windows EC2 instances"
-        print_status $RED "Current OS: $OSTYPE"
-        exit 1
-    fi
-}
-
 # Function to check prerequisites
 check_prerequisites() {
     print_status $BLUE "Checking prerequisites..."
     
-    # Check if running as administrator
-    if ! net session >/dev/null 2>&1; then
-        print_status $RED "This script must be run as Administrator"
-        print_status $YELLOW "Please right-click and 'Run as Administrator'"
+    # Check if AWS CLI is installed
+    if ! command -v aws &> /dev/null; then
+        print_status $RED "AWS CLI is not installed or not in PATH"
+        print_status $YELLOW "Please install AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
         exit 1
     fi
     
-    # Check Windows version
-    local windows_version=$(wmic os get Caption /value | grep "Caption=" | cut -d'=' -f2)
-    print_status $GREEN "Windows Version: $windows_version"
-    
-    # Check available disk space (need at least 2GB)
-    local free_space=$(wmic logicaldisk where "DeviceID='C:'" get FreeSpace /value | grep "FreeSpace=" | cut -d'=' -f2)
-    local free_space_gb=$((free_space / 1024 / 1024 / 1024))
-    
-    if [ "$free_space_gb" -lt 2 ]; then
-        print_status $RED "Insufficient disk space. Need at least 2GB, available: ${free_space_gb}GB"
+    # Check if AWS CLI is configured
+    if ! aws sts get-caller-identity &> /dev/null; then
+        print_status $RED "AWS CLI is not configured"
+        print_status $YELLOW "Please run: aws configure"
         exit 1
     fi
     
-    print_status $GREEN "Available disk space: ${free_space_gb}GB"
-    log_message "INFO" "Prerequisites check passed"
+    # Check if instance ID is provided
+    if [ -z "$INSTANCE_ID" ]; then
+        print_status $RED "Instance ID is required"
+        print_status $YELLOW "Usage: $0 <instance-id>"
+        exit 1
+    fi
+    
+    # Verify instance exists and is running
+    local instance_state=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "not-found")
+    
+    if [ "$instance_state" = "not-found" ]; then
+        print_status $RED "Instance $INSTANCE_ID not found or access denied"
+        exit 1
+    elif [ "$instance_state" != "running" ]; then
+        print_status $RED "Instance $INSTANCE_ID is not running (current state: $instance_state)"
+        exit 1
+    fi
+    
+    print_status $GREEN "Prerequisites check passed"
+    print_status $GREEN "Instance ID: $INSTANCE_ID"
+    print_status $GREEN "Instance State: $instance_state"
+    log_message "INFO" "Prerequisites check passed for instance $INSTANCE_ID"
 }
 
-# Function to download DCV components
-download_dcv_components() {
-    print_status $BLUE "Downloading DCV components..."
+# Function to deploy PowerShell script via SSM (Option A: Upload First, Then Execute)
+deploy_via_ssm_upload() {
+    print_status $BLUE "Deploying DCV installation via SSM (Upload First Method)..."
     
-    local download_dir="$SCRIPT_DIR/downloads"
-    mkdir -p "$download_dir"
+    # Step 1: Upload the PowerShell script to the instance
+    print_status $YELLOW "Step 1: Uploading PowerShell script to instance..."
+    local upload_command_id=$(aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters "commands=[\"Invoke-WebRequest -Uri $POWERSHELL_SCRIPT_URL -OutFile C:\\\\$POWERSHELL_SCRIPT_NAME\"]" \
+        --output text \
+        --query 'Command.CommandId')
     
-    # Download DCV Server
-    print_status $YELLOW "Downloading DCV Server..."
-    if ! curl -L -o "$download_dir/dcv-server.msi" "$DCV_DOWNLOAD_URL"; then
-        print_status $RED "Failed to download DCV Server"
+    if [ -z "$upload_command_id" ]; then
+        print_status $RED "Failed to upload PowerShell script"
         exit 1
     fi
     
-    # Download DCV Client (for testing)
-    print_status $YELLOW "Downloading DCV Client..."
-    if ! curl -L -o "$download_dir/dcv-client.msi" "$DCV_CLIENT_URL"; then
-        print_status $RED "Failed to download DCV Client"
+    print_status $GREEN "Upload command ID: $upload_command_id"
+    log_message "INFO" "Upload command initiated with ID: $upload_command_id"
+    
+    # Wait for upload to complete
+    print_status $YELLOW "Waiting for script upload to complete..."
+    aws ssm wait command-executed --command-id "$upload_command_id" --instance-id "$INSTANCE_ID"
+    
+    # Check upload status
+    local upload_status=$(aws ssm get-command-invocation --command-id "$upload_command_id" --instance-id "$INSTANCE_ID" --query 'Status' --output text)
+    if [ "$upload_status" != "Success" ]; then
+        print_status $RED "Script upload failed with status: $upload_status"
         exit 1
     fi
     
-    # Download DCV GL Agent (for hardware acceleration)
-    print_status $YELLOW "Downloading DCV GL Agent..."
-    if ! curl -L -o "$download_dir/dcv-gl-agent.msi" "$DCV_AGENT_URL"; then
-        print_status $RED "Failed to download DCV GL Agent"
+    print_status $GREEN "PowerShell script uploaded successfully"
+    
+    # Step 2: Execute the PowerShell script
+    print_status $YELLOW "Step 2: Executing DCV installation script..."
+    local execute_command_id=$(aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters "commands=[\"Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Force; C:\\\\$POWERSHELL_SCRIPT_NAME\"]" \
+        --output text \
+        --query 'Command.CommandId')
+    
+    if [ -z "$execute_command_id" ]; then
+        print_status $RED "Failed to execute PowerShell script"
         exit 1
     fi
     
-    print_status $GREEN "All DCV components downloaded successfully"
-    log_message "INFO" "DCV components downloaded to $download_dir"
+    print_status $GREEN "Execute command ID: $execute_command_id"
+    log_message "INFO" "Execute command initiated with ID: $execute_command_id"
+    
+    # Store command IDs for monitoring
+    echo "$execute_command_id" > "$SCRIPT_DIR/last_command_id.txt"
+    
+    print_status $GREEN "DCV installation command sent successfully"
+    print_status $YELLOW "Use 'monitor_installation' function to check progress"
 }
 
-# Function to install DCV Server
-install_dcv_server() {
-    print_status $BLUE "Installing DCV Server..."
+# Function to deploy PowerShell script via SSM (Option B: Base64 Encode and Send)
+deploy_via_ssm_base64() {
+    print_status $BLUE "Deploying DCV installation via SSM (Base64 Method)..."
     
-    local download_dir="$SCRIPT_DIR/downloads"
-    
-    # Install DCV Server silently
-    print_status $YELLOW "Installing DCV Server (this may take a few minutes)..."
-    if ! msiexec /i "$download_dir/dcv-server.msi" /quiet /norestart /log "$SCRIPT_DIR/dcv-server-install.log"; then
-        print_status $RED "Failed to install DCV Server"
-        print_status $YELLOW "Check the log file: $SCRIPT_DIR/dcv-server-install.log"
+    # Check if PowerShell script exists locally
+    local local_script="$SCRIPT_DIR/$POWERSHELL_SCRIPT_NAME"
+    if [ ! -f "$local_script" ]; then
+        print_status $RED "PowerShell script not found at: $local_script"
+        print_status $YELLOW "Please ensure dcv_install.ps1 is in the same directory as this script"
         exit 1
     fi
     
-    # Wait for installation to complete
-    sleep 10
+    # Base64 encode the script
+    print_status $YELLOW "Base64 encoding PowerShell script..."
+    local base64_script=$(base64 -w 0 "$local_script")
     
-    # Verify installation
-    if ! dcv --version >/dev/null 2>&1; then
-        print_status $RED "DCV Server installation verification failed"
+    if [ -z "$base64_script" ]; then
+        print_status $RED "Failed to base64 encode the script"
         exit 1
     fi
     
-    print_status $GREEN "DCV Server installed successfully"
-    log_message "INFO" "DCV Server installed successfully"
+    print_status $GREEN "Script encoded successfully"
+    
+    # Send and execute in one command
+    print_status $YELLOW "Sending and executing script via SSM..."
+    local command_id=$(aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters "commands=[\"[System.IO.File]::WriteAllText('C:\\\\$POWERSHELL_SCRIPT_NAME', [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$base64_script'))); Set-ExecutionPolicy RemoteSigned -Force; C:\\\\$POWERSHELL_SCRIPT_NAME\"]" \
+        --output text \
+        --query 'Command.CommandId')
+    
+    if [ -z "$command_id" ]; then
+        print_status $RED "Failed to send command via SSM"
+        exit 1
+    fi
+    
+    print_status $GREEN "Command ID: $command_id"
+    log_message "INFO" "Base64 deployment command initiated with ID: $command_id"
+    
+    # Store command ID for monitoring
+    echo "$command_id" > "$SCRIPT_DIR/last_command_id.txt"
+    
+    print_status $GREEN "DCV installation command sent successfully"
+    print_status $YELLOW "Use 'monitor_installation' function to check progress"
 }
 
-# Function to install DCV GL Agent
-install_dcv_gl_agent() {
-    print_status $BLUE "Installing DCV GL Agent..."
+# Function to monitor installation progress
+monitor_installation() {
+    local command_id="$1"
     
-    local download_dir="$SCRIPT_DIR/downloads"
-    
-    # Install DCV GL Agent silently
-    print_status $YELLOW "Installing DCV GL Agent..."
-    if ! msiexec /i "$download_dir/dcv-gl-agent.msi" /quiet /norestart /log "$SCRIPT_DIR/dcv-gl-agent-install.log"; then
-        print_status $RED "Failed to install DCV GL Agent"
-        print_status $YELLOW "Check the log file: $SCRIPT_DIR/dcv-gl-agent-install.log"
-        exit 1
+    if [ -z "$command_id" ]; then
+        # Try to get the last command ID
+        if [ -f "$SCRIPT_DIR/last_command_id.txt" ]; then
+            command_id=$(cat "$SCRIPT_DIR/last_command_id.txt")
+        else
+            print_status $RED "No command ID provided and no last command ID found"
+            print_status $YELLOW "Usage: monitor_installation <command-id>"
+            return 1
+        fi
     fi
     
-    # Wait for installation to complete
-    sleep 5
+    print_status $BLUE "Monitoring installation progress for command ID: $command_id"
     
-    print_status $GREEN "DCV GL Agent installed successfully"
-    log_message "INFO" "DCV GL Agent installed successfully"
+    # Check command status
+    local status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query 'Status' --output text 2>/dev/null || echo "not-found")
+    
+    if [ "$status" = "not-found" ]; then
+        print_status $RED "Command not found or access denied"
+        return 1
+    fi
+    
+    print_status $BLUE "Command Status: $status"
+    
+    case "$status" in
+        "InProgress")
+            print_status $YELLOW "Installation is still in progress..."
+            ;;
+        "Success")
+            print_status $GREEN "Installation completed successfully!"
+            ;;
+        "Failed"|"Cancelled"|"TimedOut")
+            print_status $RED "Installation failed with status: $status"
+            ;;
+        *)
+            print_status $YELLOW "Unknown status: $status"
+            ;;
+    esac
+    
+    # Show command output
+    print_status $BLUE "Command Output:"
+    aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query 'StandardOutputContent' --output text
+    
+    if [ "$status" = "Failed" ]; then
+        print_status $RED "Error Output:"
+        aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query 'StandardErrorContent' --output text
+    fi
+    
+    return 0
 }
 
-# Function to configure DCV Server
-configure_dcv_server() {
-    print_status $BLUE "Configuring DCV Server..."
+# Function to check installation logs
+check_installation_logs() {
+    print_status $BLUE "Checking DCV installation logs on instance..."
     
-    # Create DCV configuration directory
-    local dcv_config_dir="C:\ProgramData\DCV\conf"
-    mkdir -p "$dcv_config_dir"
+    local log_command_id=$(aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters 'commands=["Get-Content C:\\logs\\dcv-install.log -Tail 50"]' \
+        --output text \
+        --query 'Command.CommandId')
     
-    # Create DCV server configuration
-    cat > "$dcv_config_dir\dcv.conf" << 'EOF'
-[license]
-license-file = C:\ProgramData\DCV\license.lic
-
-[log]
-level = info
-file = C:\ProgramData\DCV\log\dcv-server.log
-max-file-size = 10MB
-max-file-count = 5
-
-[display]
-# Enable hardware acceleration
-enable-gl-support = true
-enable-software-rendering = false
-
-# Display settings
-width = 1920
-height = 1080
-color-depth = 24
-
-# Performance settings
-max-fps = 60
-enable-vsync = true
-
-[security]
-# Authentication settings
-auth-token-verifier = none
-enable-auth-token-verifier = false
-
-# Session settings
-max-concurrent-sessions = 10
-session-creation-timeout = 30
-
-[network]
-# Network settings
-port = 8443
-enable-quic = true
-enable-websocket = true
-
-# SSL/TLS settings
-certificate = C:\ProgramData\DCV\cert\dcv-server.crt
-private-key = C:\ProgramData\DCV\cert\dcv-server.key
-
-[storage]
-# Storage settings
-enable-file-transfer = true
-max-file-transfer-size = 100MB
-EOF
+    if [ -z "$log_command_id" ]; then
+        print_status $RED "Failed to retrieve logs"
+        return 1
+    fi
     
-    # Create certificates directory
-    local cert_dir="C:\ProgramData\DCV\cert"
-    mkdir -p "$cert_dir"
+    print_status $GREEN "Log command ID: $log_command_id"
+    print_status $YELLOW "Waiting for log retrieval..."
     
-    # Generate self-signed certificate for testing
-    print_status $YELLOW "Generating self-signed certificate..."
-    openssl req -x509 -newkey rsa:4096 -keyout "$cert_dir\dcv-server.key" -out "$cert_dir\dcv-server.crt" -days 365 -nodes -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+    # Wait for command to complete
+    aws ssm wait command-executed --command-id "$log_command_id" --instance-id "$INSTANCE_ID"
     
-    # Set proper permissions
-    icacls "$cert_dir\dcv-server.key" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)"
-    icacls "$cert_dir\dcv-server.crt" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)"
+    # Display logs
+    print_status $BLUE "Recent DCV Installation Logs:"
+    aws ssm get-command-invocation --command-id "$log_command_id" --instance-id "$INSTANCE_ID" --query 'StandardOutputContent' --output text
     
-    print_status $GREEN "DCV Server configuration completed"
-    log_message "INFO" "DCV Server configured successfully"
+    return 0
 }
 
-# Function to create DCV session
-create_dcv_session() {
-    print_status $BLUE "Creating DCV session..."
+# Function to get instance connection information
+get_connection_info() {
+    print_status $BLUE "Getting instance connection information..."
     
-    # Create a new DCV session
-    local session_name="ue5-session"
+    # Get public IP
+    local public_ip=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null || echo "N/A")
     
-    # Check if session already exists
-    if dcv list-sessions | grep -q "$session_name"; then
-        print_status $YELLOW "Session '$session_name' already exists, removing it..."
-        dcv close-session "$session_name"
-        sleep 2
-    fi
+    # Get private IP
+    local private_ip=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text 2>/dev/null || echo "N/A")
     
-    # Create new session
-    print_status $YELLOW "Creating new DCV session: $session_name"
-    if ! dcv create-session --owner "$env:USERNAME" "$session_name"; then
-        print_status $RED "Failed to create DCV session"
-        exit 1
-    fi
+    print_status $GREEN "Instance Connection Information:"
+    print_status $BLUE "Instance ID: $INSTANCE_ID"
+    print_status $BLUE "Public IP: $public_ip"
+    print_status $BLUE "Private IP: $private_ip"
+    print_status $BLUE "DCV Port: $DCV_PORT"
+    print_status $BLUE "Session Name: $DCV_SESSION_NAME"
+    print_status $BLUE "Session Owner: $DCV_SESSION_OWNER"
     
-    # Start the session
-    print_status $YELLOW "Starting DCV session..."
-    if ! dcv start-session "$session_name"; then
-        print_status $RED "Failed to start DCV session"
-        exit 1
-    fi
-    
-    # Get session information
-    local session_info=$(dcv describe-session "$session_name")
-    print_status $GREEN "DCV session created and started successfully"
-    print_status $BLUE "Session Name: $session_name"
-    print_status $BLUE "Session Info: $session_info"
-    
-    log_message "INFO" "DCV session '$session_name' created and started"
-}
-
-# Function to configure Windows firewall
-configure_firewall() {
-    print_status $BLUE "Configuring Windows Firewall..."
-    
-    # Add DCV Server to Windows Firewall
-    netsh advfirewall firewall add rule name="DCV Server" dir=in action=allow protocol=TCP localport=8443
-    netsh advfirewall firewall add rule name="DCV Server QUIC" dir=in action=allow protocol=UDP localport=8443
-    netsh advfirewall firewall add rule name="DCV Server WebSocket" dir=in action=allow protocol=TCP localport=8443
-    
-    # Add DCV Client to Windows Firewall
-    netsh advfirewall firewall add rule name="DCV Client" dir=out action=allow program="C:\Program Files\NICE\DCV\bin\dcv.exe"
-    
-    print_status $GREEN "Windows Firewall configured for DCV"
-    log_message "INFO" "Windows Firewall configured for DCV"
-}
-
-# Function to start DCV services
-start_dcv_services() {
-    print_status $BLUE "Starting DCV services..."
-    
-    # Start DCV Server service
-    print_status $YELLOW "Starting DCV Server service..."
-    if ! net start "DCV Server"; then
-        print_status $RED "Failed to start DCV Server service"
-        exit 1
-    fi
-    
-    # Set DCV Server service to start automatically
-    sc config "DCV Server" start= auto
-    
-    # Start DCV GL Agent service
-    print_status $YELLOW "Starting DCV GL Agent service..."
-    if ! net start "DCV GL Agent"; then
-        print_status $YELLOW "DCV GL Agent service not found or already running"
+    if [ "$public_ip" != "N/A" ] && [ "$public_ip" != "None" ]; then
+        print_status $GREEN "DCV Connection URL: https://$public_ip:$DCV_PORT"
     else
-        # Set DCV GL Agent service to start automatically
-        sc config "DCV GL Agent" start= auto
+        print_status $YELLOW "No public IP found. Use private IP or VPN to connect."
+        print_status $YELLOW "DCV Connection URL: https://$private_ip:$DCV_PORT"
     fi
     
-    print_status $GREEN "DCV services started successfully"
-    log_message "INFO" "DCV services started successfully"
+    log_message "INFO" "Connection info retrieved for instance $INSTANCE_ID"
 }
 
-# Function to create connection script
-create_connection_script() {
-    print_status $BLUE "Creating connection script..."
-    
-    local connection_script="$SCRIPT_DIR/connect_dcv.bat"
-    
-    cat > "$connection_script" << 'EOF'
-@echo off
-REM DCV Connection Script for Unreal Engine 5 Development
-REM This script connects to the DCV session for remote desktop access
 
-echo ========================================
-echo DCV Connection Script
-echo ========================================
-echo.
-
-REM Get the current instance's public IP
-for /f "tokens=2 delims=:" %%a in ('curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2^>nul') do set PUBLIC_IP=%%a
-
-if "%PUBLIC_IP%"=="" (
-    echo Warning: Could not retrieve public IP address
-    echo You may need to manually specify the IP address
-    set /p PUBLIC_IP="Enter the public IP address: "
-)
-
-echo Connecting to DCV session...
-echo Public IP: %PUBLIC_IP%
-echo Port: 8443
-echo Session: ue5-session
-echo.
-
-REM Launch DCV Viewer
-echo Launching DCV Viewer...
-start "" "C:\Program Files\NICE\DCV\bin\dcv.exe" connect --web-url https://%PUBLIC_IP%:8443 ue5-session
-
-echo.
-echo If the DCV Viewer doesn't open automatically, you can:
-echo 1. Open a web browser and navigate to: https://%PUBLIC_IP%:8443
-echo 2. Or manually launch: "C:\Program Files\NICE\DCV\bin\dcv.exe" connect --web-url https://%PUBLIC_IP%:8443 ue5-session
-echo.
-echo Note: You may see a security warning due to the self-signed certificate.
-echo Click "Advanced" and "Proceed to localhost (unsafe)" to continue.
-echo.
-pause
-EOF
-    
-    print_status $GREEN "Connection script created: $connection_script"
-    log_message "INFO" "Connection script created: $connection_script"
-}
-
-# Function to create status check script
-create_status_script() {
-    print_status $BLUE "Creating status check script..."
-    
-    local status_script="$SCRIPT_DIR/check_dcv_status.bat"
-    
-    cat > "$status_script" << 'EOF'
-@echo off
-REM DCV Status Check Script
-REM This script checks the status of DCV services and sessions
-
-echo ========================================
-echo DCV Status Check
-echo ========================================
-echo.
-
-echo Checking DCV Server service...
-sc query "DCV Server"
-echo.
-
-echo Checking DCV GL Agent service...
-sc query "DCV GL Agent"
-echo.
-
-echo Checking DCV sessions...
-dcv list-sessions
-echo.
-
-echo Checking DCV server status...
-dcv --version
-echo.
-
-echo Checking network connectivity...
-netstat -an | findstr :8443
-echo.
-
-echo ========================================
-echo Status Check Complete
-echo ========================================
-pause
-EOF
-    
-    print_status $GREEN "Status check script created: $status_script"
-    log_message "INFO" "Status check script created: $status_script"
-}
-
-# Function to create documentation
-create_documentation() {
-    print_status $BLUE "Creating documentation..."
-    
-    local doc_file="$SCRIPT_DIR/DCV_SETUP_GUIDE.md"
-    
-    cat > "$doc_file" << 'EOF'
-# AWS DCV Setup Guide for Unreal Engine 5 Development
-
-## Overview
-This guide covers the setup and configuration of AWS DCV (Desktop and Cloud Visualization) on Windows EC2 instances for Unreal Engine 5 development.
-
-## Installation Summary
-- **DCV Server Version**: 2023.2-15773
-- **Installation Path**: C:\Program Files\NICE\DCV\
-- **Configuration Path**: C:\ProgramData\DCV\conf\
-- **Log Path**: C:\ProgramData\DCV\log\
-- **Certificate Path**: C:\ProgramData\DCV\cert\
-
-## Services Installed
-1. **DCV Server**: Main DCV server service
-2. **DCV GL Agent**: Hardware acceleration support
-3. **DCV Client**: Local client for testing
-
-## Configuration Details
-
-### Network Configuration
-- **Port**: 8443 (HTTPS)
-- **Protocols**: TCP, UDP (QUIC), WebSocket
-- **Authentication**: Token-based (disabled for development)
-
-### Display Configuration
-- **Resolution**: 1920x1080
-- **Color Depth**: 24-bit
-- **Max FPS**: 60
-- **Hardware Acceleration**: Enabled
-
-### Security Configuration
-- **SSL/TLS**: Self-signed certificate
-- **Firewall**: Windows Firewall rules configured
-- **Authentication**: Disabled for development (enable for production)
-
-## Usage Instructions
-
-### Connecting to DCV Session
-
-#### Method 1: Using the Connection Script
-```bash
-# Run the connection script
-./connect_dcv.bat
-```
-
-#### Method 2: Manual Connection
-```bash
-# Get the public IP address
-curl http://169.254.169.254/latest/meta-data/public-ipv4
-
-# Connect using DCV client
-"C:\Program Files\NICE\DCV\bin\dcv.exe" connect --web-url https://<PUBLIC_IP>:8443 ue5-session
-```
-
-#### Method 3: Web Browser
-1. Open a web browser
-2. Navigate to: `https://<PUBLIC_IP>:8443`
-3. Enter session name: `ue5-session`
-4. Click "Connect"
-
-### Managing DCV Sessions
-
-#### List Sessions
-```bash
-dcv list-sessions
-```
-
-#### Create New Session
-```bash
-dcv create-session --owner <username> <session-name>
-```
-
-#### Start Session
-```bash
-dcv start-session <session-name>
-```
-
-#### Stop Session
-```bash
-dcv stop-session <session-name>
-```
-
-#### Close Session
-```bash
-dcv close-session <session-name>
-```
-
-### Checking Status
-```bash
-# Run the status check script
-./check_dcv_status.bat
-
-# Or manually check services
-sc query "DCV Server"
-sc query "DCV GL Agent"
-```
-
-## Troubleshooting
-
-### Common Issues
-
-#### 1. Service Not Starting
-- Check Windows Event Logs
-- Verify firewall settings
-- Ensure proper permissions
-
-#### 2. Connection Refused
-- Verify DCV Server is running
-- Check firewall rules
-- Confirm port 8443 is open
-
-#### 3. Certificate Warnings
-- This is expected with self-signed certificates
-- Click "Advanced" and "Proceed to localhost (unsafe)"
-
-#### 4. Performance Issues
-- Check hardware acceleration is enabled
-- Verify sufficient system resources
-- Monitor network bandwidth
-
-### Log Files
-- **DCV Server**: C:\ProgramData\DCV\log\dcv-server.log
-- **Installation**: dcv-server-install.log, dcv-gl-agent-install.log
-- **Setup**: dcv_setup.log
-
-### Performance Optimization
-1. **Hardware Acceleration**: Ensure DCV GL Agent is running
-2. **Network**: Use stable, high-bandwidth connection
-3. **Display**: Adjust resolution based on network capacity
-4. **Compression**: DCV automatically optimizes based on network conditions
-
-## Security Considerations
-
-### For Development
-- Self-signed certificates are acceptable
-- Authentication is disabled for ease of use
-- Firewall rules are permissive
-
-### For Production
-- Use proper SSL certificates
-- Enable authentication
-- Restrict firewall rules to specific IPs
-- Implement proper access controls
-
-## Integration with Unreal Engine 5
-
-### Benefits
-1. **Remote Development**: Access UE5 editor remotely
-2. **Hardware Acceleration**: GPU support for rendering
-3. **File Transfer**: Easy file sharing between local and remote
-4. **Multi-user**: Support for multiple developers
-
-### Best Practices
-1. **Session Management**: Create separate sessions for different projects
-2. **Resource Monitoring**: Monitor system resources during compilation
-3. **Backup**: Regular backups of UE5 projects
-4. **Updates**: Keep DCV and UE5 updated
-
-## Support and Resources
-
-### Official Documentation
-- [AWS DCV Administrator Guide](https://docs.aws.amazon.com/dcv/latest/adminguide/)
-- [DCV User Guide](https://docs.aws.amazon.com/dcv/latest/userguide/)
-
-### Community Resources
-- AWS DCV Forum
-- GitHub Issues
-- Stack Overflow
-
-### Contact Information
-- AWS Support: For AWS-specific issues
-- NICE Software Support: For DCV-specific issues
-EOF
-    
-    print_status $GREEN "Documentation created: $doc_file"
-    log_message "INFO" "Documentation created: $doc_file"
-}
-
-# Function to perform post-installation verification
-verify_installation() {
-    print_status $BLUE "Performing post-installation verification..."
-    
-    # Check DCV version
-    local dcv_version=$(dcv --version 2>/dev/null || echo "Not found")
-    print_status $BLUE "DCV Version: $dcv_version"
-    
-    # Check services
-    local dcv_server_status=$(sc query "DCV Server" | grep "STATE" | head -1)
-    local dcv_gl_agent_status=$(sc query "DCV GL Agent" | grep "STATE" | head -1)
-    
-    print_status $BLUE "DCV Server Status: $dcv_server_status"
-    print_status $BLUE "DCV GL Agent Status: $dcv_gl_agent_status"
-    
-    # Check sessions
-    local sessions=$(dcv list-sessions 2>/dev/null || echo "No sessions found")
-    print_status $BLUE "DCV Sessions: $sessions"
-    
-    # Check network
-    local port_status=$(netstat -an | grep ":8443" || echo "Port 8443 not listening")
-    print_status $BLUE "Port 8443 Status: $port_status"
-    
-    # Check firewall rules
-    local firewall_rules=$(netsh advfirewall firewall show rule name="DCV*" | grep "Enabled" || echo "No DCV firewall rules found")
-    print_status $BLUE "Firewall Rules: $firewall_rules"
-    
-    print_status $GREEN "Verification completed"
-    log_message "INFO" "Post-installation verification completed"
-}
-
-# Function to display completion summary
-display_summary() {
-    print_status $GREEN "=========================================="
-    print_status $GREEN "AWS DCV Setup Completed Successfully!"
-    print_status $GREEN "=========================================="
-    print_status $BLUE ""
-    print_status $BLUE "Installation Summary:"
-    print_status $BLUE "- DCV Server: Installed and configured"
-    print_status $BLUE "- DCV GL Agent: Installed for hardware acceleration"
-    print_status $BLUE "- DCV Client: Downloaded for testing"
-    print_status $BLUE "- Session: 'ue5-session' created and started"
-    print_status $BLUE "- Firewall: Configured for DCV traffic"
-    print_status $BLUE "- Services: Started and set to auto-start"
-    print_status $BLUE ""
-    print_status $BLUE "Next Steps:"
-    print_status $BLUE "1. Run: ./connect_dcv.bat"
-    print_status $BLUE "2. Or connect via web browser: https://<PUBLIC_IP>:8443"
-    print_status $BLUE "3. Session name: ue5-session"
-    print_status $BLUE "4. Check status: ./check_dcv_status.bat"
-    print_status $BLUE ""
-    print_status $BLUE "Files Created:"
-    print_status $BLUE "- Connection script: ./connect_dcv.bat"
-    print_status $BLUE "- Status script: ./check_dcv_status.bat"
-    print_status $BLUE "- Documentation: ./DCV_SETUP_GUIDE.md"
-    print_status $BLUE "- Log file: ./dcv_setup.log"
-    print_status $BLUE ""
-    print_status $YELLOW "Note: You may see certificate warnings due to self-signed certificate."
-    print_status $YELLOW "This is normal for development environments."
-    print_status $GREEN "=========================================="
-    
-    log_message "INFO" "DCV setup completed successfully"
+# Function to display usage information
+show_usage() {
+    echo "Usage: $0 <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  deploy-upload <instance-id>     Deploy DCV via SSM (Upload First Method)"
+    echo "  deploy-base64 <instance-id>     Deploy DCV via SSM (Base64 Method)"
+    echo "  monitor <instance-id> [cmd-id]  Monitor installation progress"
+    echo "  logs <instance-id>              Check installation logs"
+    echo "  info <instance-id>              Get connection information"
+    echo "  help                            Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0 deploy-upload i-0a0cf65b6a9a9b7d0"
+    echo "  $0 deploy-base64 i-0a0cf65b6a9a9b7d0"
+    echo "  $0 monitor i-0a0cf65b6a9a9b7d0"
+    echo "  $0 logs i-0a0cf65b6a9a9b7d0"
+    echo "  $0 info i-0a0cf65b6a9a9b7d0"
+    echo ""
+    echo "Prerequisites:"
+    echo "  - AWS CLI installed and configured"
+    echo "  - SSM agent running on target instance"
+    echo "  - Appropriate IAM permissions for SSM"
+    echo ""
+    echo "For the base64 method, ensure dcv_install.ps1 is in the same directory as this script."
 }
 
 # Main execution function
 main() {
-    print_status $GREEN "Starting AWS DCV Setup for Windows EC2"
-    print_status $GREEN "======================================="
+    local command="$1"
+    INSTANCE_ID="$2"
     
     # Initialize log file
-    echo "AWS DCV Setup Log - $(date)" > "$LOG_FILE"
+    echo "AWS DCV SSM Deployment Log - $(date)" > "$LOG_FILE"
     
-    # Execute setup steps
-    check_windows
-    check_prerequisites
-    download_dcv_components
-    install_dcv_server
-    install_dcv_gl_agent
-    configure_dcv_server
-    create_dcv_session
-    configure_firewall
-    start_dcv_services
-    create_connection_script
-    create_status_script
-    create_documentation
-    verify_installation
-    display_summary
+    case "$command" in
+        "deploy-upload")
+            if [ -z "$INSTANCE_ID" ]; then
+                print_status $RED "Instance ID required for deploy-upload command"
+                show_usage
+                exit 1
+            fi
+            print_status $GREEN "Starting DCV deployment via SSM (Upload Method)"
+            print_status $GREEN "=============================================="
+            check_prerequisites
+            deploy_via_ssm_upload
+            get_connection_info
+            ;;
+        "deploy-base64")
+            if [ -z "$INSTANCE_ID" ]; then
+                print_status $RED "Instance ID required for deploy-base64 command"
+                show_usage
+                exit 1
+            fi
+            print_status $GREEN "Starting DCV deployment via SSM (Base64 Method)"
+            print_status $GREEN "=============================================="
+            check_prerequisites
+            deploy_via_ssm_base64
+            get_connection_info
+            ;;
+        "monitor")
+            if [ -z "$INSTANCE_ID" ]; then
+                print_status $RED "Instance ID required for monitor command"
+                show_usage
+                exit 1
+            fi
+            print_status $GREEN "Monitoring DCV installation progress"
+            print_status $GREEN "===================================="
+            check_prerequisites
+            monitor_installation "$3"
+            ;;
+        "logs")
+            if [ -z "$INSTANCE_ID" ]; then
+                print_status $RED "Instance ID required for logs command"
+                show_usage
+                exit 1
+            fi
+            print_status $GREEN "Checking DCV installation logs"
+            print_status $GREEN "=============================="
+            check_prerequisites
+            check_installation_logs
+            ;;
+        "info")
+            if [ -z "$INSTANCE_ID" ]; then
+                print_status $RED "Instance ID required for info command"
+                show_usage
+                exit 1
+            fi
+            print_status $GREEN "Getting instance connection information"
+            print_status $GREEN "======================================="
+            check_prerequisites
+            get_connection_info
+            ;;
+        "help"|"-h"|"--help"|"")
+            show_usage
+            ;;
+        *)
+            print_status $RED "Unknown command: $command"
+            show_usage
+            exit 1
+            ;;
+    esac
     
-    print_status $GREEN "Setup completed successfully!"
+    print_status $GREEN "Operation completed!"
     print_status $BLUE "Check the log file for detailed information: $LOG_FILE"
 }
 

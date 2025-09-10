@@ -33,6 +33,11 @@ enable_ue5_linux      = false
 parallel_build_jobs = 0  # 0 means use all available cores
 build_timeout_hours = 8
 
+# Snapshot Configuration (Optional)
+# Leave empty to create new volumes, or specify snapshot IDs to use existing snapshots
+root_volume_snapshot_id = ""  # Snapshot ID for 100GB root volume
+data_volume_snapshot_id = ""  # Snapshot ID for 500GB data volume
+
 # Additional Tags
 additional_tags = {
   Owner       = "your-name"

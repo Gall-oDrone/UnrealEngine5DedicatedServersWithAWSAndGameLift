@@ -1128,6 +1128,41 @@ Resources:
             Action: ssm:CreateActivation
             Resource:
               - !Sub arn:aws:iam::${AWS::AccountId}:role/unreal-engine-5-dedicated-servers-hybrid-node-role-*
+  UnrealEngineSsmFullAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Roles:
+        - !Ref UnrealEngineIdeRole
+      ManagedPolicyName: !Sub ${AWS::StackName}-ssm-full-access
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ssm:*
+              - ssm-parameter:*
+              - ssm-document:*
+              - ssm-patch:*
+              - ssm-maintenance:*
+              - ssm-ops:*
+              - ssm-inventory:*
+              - ssm-compliance:*
+              - ssm-session:*
+              - ssm-command:*
+              - ssm-state:*
+              - ssm-window:*
+              - ssm-activation:*
+              - ssm-association:*
+              - ssm-automation:*
+              - ssm-contact:*
+              - ssm-contacts:*
+              - ssm-incidents:*
+              - ssm-opsitem:*
+              - ssm-opsmetadata:*
+              - ssm-resource:*
+              - ssm-resource-data-sync:*
+              - ssm-service-setting:*
+            Resource: "*"
   UnrealEngineIdeInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
@@ -1144,6 +1179,7 @@ Resources:
       - UnrealEngineCustomPolicy
       - UnrealEngineTroubleshootPolicy
       - UnrealEngineSsmPolicy
+      - UnrealEngineSsmFullAccessPolicy
     Properties:
       ImageId: !Ref AmiParameterStoreName
       InstanceType: t3.medium
