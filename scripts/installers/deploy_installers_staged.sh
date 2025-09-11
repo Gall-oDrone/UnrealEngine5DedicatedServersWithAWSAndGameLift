@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Staged Installer Deployment Script for Windows EC2 via SSM
-# This script deploys installers from S3 URLs to Windows instances in stages with progress monitoring
-# Combines the staged deployment logic from deploy-staged.sh with installer deployment from setup_dcv.sh
+# S3 Installer Deployment Script for Windows EC2 via SSM
+# This script deploys installers from S3 URLs to Windows instances with progress monitoring
+# Similar to how NiceDCV is deployed, but for general installers from S3 bucket
 
 set -euo pipefail
 
@@ -16,49 +16,46 @@ NC='\033[0m' # No Color
 
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 LOG_FILE="$SCRIPT_DIR/installer_deployment.log"
 
 # Default values
-ENVIRONMENT="dev"
 AUTO_APPROVE=false
-SKIP_INSTALLER_CHECK=false
-DESTROY=false
+SKIP_URL_CHECK=false
 
-# Array of S3 installer URLs (you can modify these as needed)
+# Array of S3 installer URLs
 declare -a INSTALLER_URLS=(
-    # Add your S3 installer URLs here
-    # Example: "https://s3.amazonaws.com/your-bucket/installers/NiceDCV/Amazon DCV 2024.0 Client/Windows x86_64/Version 2024.0-9431/nice-dcv-client-Release.msi"
-    # Example: "https://s3.amazonaws.com/your-bucket/installers/CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
-    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/CMake/Windows+x86_64/Version+4.1.1/cmake-4.1.1-windows-x86_64.msi
-    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Git/Windows+x86_64/Version+2.51.0/Git-2.51.0-64-bit.exe
-    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/NASM/Windows+x86_64/Version+2.16.03/nasm-2.16.03-installer-x64.exe
-    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Python+Manager/Windows+x86_64/Version+25.0b14/python-manager-25.0b14.msi
-    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Strawberry+Perl/Windows+x86_64/Version+5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi
+    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/CMake/Windows+x86_64/Version+4.1.1/cmake-4.1.1-windows-x86_64.msi"
+    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Git/Windows+x86_64/Version+2.51.0/Git-2.51.0-64-bit.exe"
+    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/NASM/Windows+x86_64/Version+2.16.03/nasm-2.16.03-installer-x64.exe"
+    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Python+Manager/Windows+x86_64/Version+25.0b14/python-manager-25.0b14.msi"
+    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Strawberry+Perl/Windows+x86_64/Version+5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
 )
 
 # Array of installer names (corresponding to INSTALLER_URLS array)
 declare -a INSTALLER_NAMES=(
-    # Add descriptive names for your installers
-    # Example: "NiceDCV Client"
-    # Example: "CMake"
     "CMake"
-    "Git"
-    "NASM"
+    "Git for Windows"
+    "NASM Assembler"
     "Python Manager"
     "Strawberry Perl"
 )
 
 # Array of installer types (msi, exe, zip, etc.)
 declare -a INSTALLER_TYPES=(
-    # Add installer types corresponding to URLs
-    # Example: "msi"
-    # Example: "msi"
     "msi"
     "exe"
     "exe"
     "msi"
     "msi"
+)
+
+# Array of installer arguments for silent installation
+declare -a INSTALLER_ARGS=(
+    "/quiet /norestart"                    # CMake - MSI standard
+    "/VERYSILENT /NORESTART"                # Git - Inno Setup
+    "/S"                                    # NASM - NSIS installer
+    "/quiet /norestart"                     # Python Manager - MSI standard
+    "/quiet /norestart"                     # Strawberry Perl - MSI standard
 )
 
 # PowerShell script for installer execution
@@ -103,23 +100,30 @@ show_usage() {
     cat << EOF
 Usage: $0 [OPTIONS] <instance-id>
 
-Deploy installers from S3 URLs to Windows EC2 instances in stages.
+Deploy installers from S3 URLs to Windows EC2 instances via SSM.
 
 OPTIONS:
     -h, --help              Show this help message
-    -e, --environment       Environment to deploy (dev, staging, prod) [default: dev]
-    -a, --auto-approve      Auto-approve changes
-    --skip-installer-check  Skip installer connectivity check
-    -d, --destroy           Destroy the infrastructure
+    -a, --auto-approve      Auto-approve deployment
+    --skip-url-check        Skip S3 URL validation
     -l, --list-installers   List configured installers
     --add-installer         Add a new installer URL interactively
+    --check-status          Check installation status
+
+REQUIRED:
+    instance-id             EC2 instance ID to deploy installers to
 
 EXAMPLES:
     $0 i-0a0cf65b6a9a9b7d0                    Deploy installers to instance
     $0 -a i-0a0cf65b6a9a9b7d0                 Deploy with auto-approval
-    $0 --skip-installer-check i-0a0cf65b6a9a9b7d0  Deploy without checking installer URLs
-    $0 -l                                     List configured installers
-    $0 --add-installer                        Add new installer interactively
+    $0 --skip-url-check i-0a0cf65b6a9a9b7d0   Deploy without checking S3 URLs
+    $0 -l                                      List configured installers
+    $0 --check-status i-0a0cf65b6a9a9b7d0     Check installation status
+
+NOTES:
+    - Instance must have SSM agent installed and running
+    - Instance must have appropriate IAM role for SSM
+    - S3 URLs must be publicly accessible or instance must have S3 access
 
 EOF
 }
@@ -138,6 +142,11 @@ check_prerequisites() {
     # Check jq for JSON parsing
     if ! command -v jq &> /dev/null; then
         missing_tools+=("jq")
+    fi
+    
+    # Check curl for URL validation
+    if ! command -v curl &> /dev/null; then
+        missing_tools+=("curl")
     fi
     
     if [[ ${#missing_tools[@]} -gt 0 ]]; then
@@ -162,7 +171,10 @@ validate_instance() {
     print_info "Validating instance: $instance_id"
     
     # Verify instance exists and is running
-    local instance_state=$(aws ec2 describe-instances --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "not-found")
+    local instance_state=$(aws ec2 describe-instances \
+        --instance-ids "$instance_id" \
+        --query 'Reservations[0].Instances[0].State.Name' \
+        --output text 2>/dev/null || echo "not-found")
     
     if [ "$instance_state" = "not-found" ]; then
         print_error "Instance $instance_id not found or access denied"
@@ -173,7 +185,10 @@ validate_instance() {
     fi
     
     # Check if SSM agent is available
-    local ssm_status=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$instance_id" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo "Offline")
+    local ssm_status=$(aws ssm describe-instance-information \
+        --filters "Key=InstanceIds,Values=$instance_id" \
+        --query 'InstanceInformationList[0].PingStatus' \
+        --output text 2>/dev/null || echo "Offline")
     
     if [ "$ssm_status" != "Online" ]; then
         print_error "SSM agent is not online on instance $instance_id (status: $ssm_status)"
@@ -194,7 +209,6 @@ list_installers() {
     
     if [ ${#INSTALLER_URLS[@]} -eq 0 ]; then
         print_warning "No installers configured"
-        print_info "Use --add-installer to add installers interactively"
         return 0
     fi
     
@@ -202,11 +216,15 @@ list_installers() {
         local url="${INSTALLER_URLS[$i]}"
         local name="${INSTALLER_NAMES[$i]:-Unnamed}"
         local type="${INSTALLER_TYPES[$i]:-Unknown}"
+        local args="${INSTALLER_ARGS[$i]:-Default}"
         
-        echo "  [$((i+1))] $name ($type)"
-        echo "      URL: $url"
         echo ""
+        echo "  [$((i+1))] $name"
+        echo "      Type: $type"
+        echo "      Args: $args"
+        echo "      URL: $url"
     done
+    echo ""
 }
 
 # Function to add installer interactively
@@ -222,6 +240,9 @@ add_installer() {
     echo -n "Enter installer type (msi, exe, zip, etc.): "
     read -r installer_type
     
+    echo -n "Enter silent install arguments (e.g., /quiet for MSI): "
+    read -r installer_args
+    
     # Validate URL
     if [[ ! "$installer_url" =~ ^https?:// ]]; then
         print_error "Invalid URL format"
@@ -232,25 +253,27 @@ add_installer() {
     INSTALLER_URLS+=("$installer_url")
     INSTALLER_NAMES+=("$installer_name")
     INSTALLER_TYPES+=("$installer_type")
+    INSTALLER_ARGS+=("$installer_args")
     
     print_success "Installer added successfully"
     print_info "Name: $installer_name"
     print_info "URL: $installer_url"
     print_info "Type: $installer_type"
+    print_info "Args: $installer_args"
     
-    # Save to script (this would require modifying the script file)
-    print_warning "Note: To persist this installer, you need to manually add it to the script arrays"
+    print_warning "Note: To persist this installer, manually add it to the script arrays"
 }
 
-# Function to validate installer URLs
-validate_installer_urls() {
+# Function to validate S3 URLs
+validate_s3_urls() {
     if [ ${#INSTALLER_URLS[@]} -eq 0 ]; then
         print_warning "No installers configured"
         return 0
     fi
     
-    print_info "Validating installer URLs..."
+    print_info "Validating S3 URLs..."
     
+    local failed_count=0
     for i in "${!INSTALLER_URLS[@]}"; do
         local url="${INSTALLER_URLS[$i]}"
         local name="${INSTALLER_NAMES[$i]:-Unnamed}"
@@ -260,46 +283,63 @@ validate_installer_urls() {
             continue
         fi
         
-        print_info "Checking: $name"
+        print_progress "Checking: $name"
         
-        # Test URL accessibility
-        if curl -s --head "$url" | head -n 1 | grep -q "200 OK"; then
-            print_success "✅ $name - URL accessible"
+        # Test URL accessibility (HEAD request)
+        if curl -s --head "$url" | head -n 1 | grep -qE "200|302|301"; then
+            print_success "  ✅ $name - URL accessible"
         else
-            print_warning "⚠️ $name - URL might not be accessible"
+            print_error "  ❌ $name - URL not accessible"
+            ((failed_count++))
         fi
     done
+    
+    if [ $failed_count -gt 0 ]; then
+        print_warning "$failed_count URL(s) failed validation"
+        if [[ "$SKIP_URL_CHECK" != true ]]; then
+            print_error "Use --skip-url-check to bypass validation"
+            return 1
+        fi
+    fi
+    
+    return 0
 }
 
 # Function to create PowerShell installer script
 create_powershell_script() {
-    local script_path="$SCRIPT_DIR/$POWERSHELL_SCRIPT_NAME"
+    local script_path="/tmp/$POWERSHELL_SCRIPT_NAME"
     
     print_info "Creating PowerShell installer script..."
     
     cat > "$script_path" << 'EOF'
-# PowerShell Script for Installer Deployment
+# PowerShell Script for S3 Installer Deployment
 # This script downloads and installs software from S3 URLs
 
 param(
     [string[]]$InstallerUrls = @(),
     [string[]]$InstallerNames = @(),
-    [string[]]$InstallerTypes = @()
+    [string[]]$InstallerTypes = @(),
+    [string[]]$InstallerArgs = @()
 )
 
 # Set up logging
 $LogDir = "C:\logs"
 if (!(Test-Path $LogDir)) {
-    New-Item -ItemType Directory -Path $LogDir -Force
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
 $LogFile = "$LogDir\installer-deployment.log"
+$Timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
+$SessionLogFile = "$LogDir\installer-deployment-$Timestamp.log"
 
 # Set up download directory
-$DCVDownloadDir = "C:\downloads"
-if (!(Test-Path $DCVDownloadDir)) {
-    New-Item -ItemType Directory -Path $DCVDownloadDir -Force
+$DownloadDir = "C:\temp\installers"
+if (!(Test-Path $DownloadDir)) {
+    New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
 }
+
+# Start transcript
+Start-Transcript -Path $SessionLogFile -Append
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
@@ -312,34 +352,36 @@ function Write-Log {
 function Download-Installer {
     param(
         [string]$Url,
-        [string]$Name,
-        [string]$Type
+        [string]$Name
     )
     
-    Write-Log "Starting download: $Name" "INFO"
+    Write-Log "Downloading: $Name" "INFO"
     
     try {
-        # Use the DCV download directory
-        $DownloadDir = $DCVDownloadDir
-        
-        # Extract filename from URL
-        $FileName = Split-Path $Url -Leaf
+        # Extract filename from URL and decode URL encoding
+        $EncodedFileName = Split-Path $Url -Leaf
+        $FileName = [System.Web.HttpUtility]::UrlDecode($EncodedFileName)
         $FilePath = "$DownloadDir\$FileName"
         
-        # Download file
-        Write-Log "Downloading $Name from $Url" "INFO"
+        Write-Log "  Source: $Url" "INFO"
+        Write-Log "  Destination: $FilePath" "INFO"
+        
+        # Download file with progress
+        $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri $Url -OutFile $FilePath -UseBasicParsing
+        $ProgressPreference = 'Continue'
         
         if (Test-Path $FilePath) {
-            Write-Log "Download completed: $Name" "SUCCESS"
+            $FileSize = (Get-Item $FilePath).Length / 1MB
+            Write-Log "  Download completed: $Name (${FileSize}MB)" "SUCCESS"
             return $FilePath
         } else {
-            Write-Log "Download failed: $Name" "ERROR"
+            Write-Log "  Download failed: $Name" "ERROR"
             return $null
         }
     }
     catch {
-        Write-Log "Download error for $Name : $($_.Exception.Message)" "ERROR"
+        Write-Log "  Download error for $Name : $($_.Exception.Message)" "ERROR"
         return $null
     }
 }
@@ -348,68 +390,107 @@ function Install-Software {
     param(
         [string]$FilePath,
         [string]$Name,
-        [string]$Type
+        [string]$Type,
+        [string]$Args
     )
     
-    Write-Log "Starting installation: $Name" "INFO"
+    Write-Log "Installing: $Name" "INFO"
+    Write-Log "  File: $FilePath" "INFO"
+    Write-Log "  Type: $Type" "INFO"
+    Write-Log "  Args: $Args" "INFO"
     
     try {
+        $Process = $null
+        
         switch ($Type.ToLower()) {
             "msi" {
-                Write-Log "Installing MSI: $Name" "INFO"
-                $Arguments = "/i `"$FilePath`" /quiet /norestart"
-                Start-Process -FilePath "msiexec.exe" -ArgumentList $Arguments -Wait
+                Write-Log "  Running MSI installer" "INFO"
+                if ([string]::IsNullOrEmpty($Args)) {
+                    $Args = "/quiet /norestart"
+                }
+                $Process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$FilePath`" $Args" -Wait -PassThru
             }
             "exe" {
-                Write-Log "Installing EXE: $Name" "INFO"
-                Start-Process -FilePath $FilePath -ArgumentList "/S" -Wait
+                Write-Log "  Running EXE installer" "INFO"
+                if ([string]::IsNullOrEmpty($Args)) {
+                    $Args = "/S"
+                }
+                $Process = Start-Process -FilePath $FilePath -ArgumentList $Args -Wait -PassThru
             }
             "zip" {
-                Write-Log "Extracting ZIP: $Name" "INFO"
+                Write-Log "  Extracting ZIP archive" "INFO"
                 $ExtractDir = "C:\Program Files\$Name"
                 Expand-Archive -Path $FilePath -DestinationPath $ExtractDir -Force
+                Write-Log "  Extracted to: $ExtractDir" "INFO"
+                return $true
             }
             default {
-                Write-Log "Unknown installer type: $Type for $Name" "WARNING"
-                Write-Log "Attempting to run as executable: $Name" "INFO"
-                Start-Process -FilePath $FilePath -Wait
+                Write-Log "  Unknown installer type: $Type" "WARNING"
+                Write-Log "  Attempting to run as executable" "INFO"
+                $Process = Start-Process -FilePath $FilePath -Wait -PassThru
             }
         }
         
-        Write-Log "Installation completed: $Name" "SUCCESS"
+        if ($Process) {
+            $ExitCode = $Process.ExitCode
+            Write-Log "  Installation exit code: $ExitCode" "INFO"
+            
+            if ($ExitCode -eq 0 -or $ExitCode -eq 3010) {
+                Write-Log "  Installation completed: $Name" "SUCCESS"
+                return $true
+            } else {
+                Write-Log "  Installation failed with exit code: $ExitCode" "ERROR"
+                return $false
+            }
+        }
+        
         return $true
     }
     catch {
-        Write-Log "Installation error for $Name : $($_.Exception.Message)" "ERROR"
+        Write-Log "  Installation error for $Name : $($_.Exception.Message)" "ERROR"
         return $false
     }
 }
 
 # Main execution
-Write-Log "Starting installer deployment process" "INFO"
+Write-Log "========================================" "INFO"
+Write-Log "Starting S3 Installer Deployment Process" "INFO"
+Write-Log "========================================" "INFO"
 Write-Log "Number of installers: $($InstallerUrls.Count)" "INFO"
 
 $SuccessCount = 0
 $FailureCount = 0
+$SkippedCount = 0
+
+# Create progress marker file
+$ProgressFile = "$LogDir\installer-deployment-progress.txt"
+"STARTED" | Out-File -FilePath $ProgressFile -Force
 
 for ($i = 0; $i -lt $InstallerUrls.Count; $i++) {
     $Url = $InstallerUrls[$i]
     $Name = if ($i -lt $InstallerNames.Count) { $InstallerNames[$i] } else { "Installer $($i+1)" }
     $Type = if ($i -lt $InstallerTypes.Count) { $InstallerTypes[$i] } else { "unknown" }
+    $InstallArgs = if ($i -lt $InstallerArgs.Count) { $InstallerArgs[$i] } else { "" }
     
     if ([string]::IsNullOrEmpty($Url)) {
         Write-Log "Skipping empty URL for: $Name" "WARNING"
+        $SkippedCount++
         continue
     }
     
+    Write-Log "" "INFO"
     Write-Log "Processing installer $($i+1)/$($InstallerUrls.Count): $Name" "INFO"
+    Write-Log "----------------------------------------" "INFO"
+    
+    # Update progress
+    "INSTALLING: $Name ($($i+1)/$($InstallerUrls.Count))" | Out-File -FilePath $ProgressFile -Force
     
     # Download installer
-    $FilePath = Download-Installer -Url $Url -Name $Name -Type $Type
+    $FilePath = Download-Installer -Url $Url -Name $Name
     
     if ($FilePath) {
         # Install software
-        if (Install-Software -FilePath $FilePath -Name $Name -Type $Type) {
+        if (Install-Software -FilePath $FilePath -Name $Name -Type $Type -Args $InstallArgs) {
             $SuccessCount++
             Write-Log "✅ Successfully installed: $Name" "SUCCESS"
         } else {
@@ -419,11 +500,11 @@ for ($i = 0; $i -lt $InstallerUrls.Count; $i++) {
         
         # Clean up downloaded file
         try {
-            Remove-Item $FilePath -Force
-            Write-Log "Cleaned up downloaded file: $Name" "INFO"
+            Remove-Item $FilePath -Force -ErrorAction SilentlyContinue
+            Write-Log "  Cleaned up installer file" "INFO"
         }
         catch {
-            Write-Log "Failed to clean up file: $Name" "WARNING"
+            Write-Log "  Failed to clean up file: $($_.Exception.Message)" "WARNING"
         }
     } else {
         $FailureCount++
@@ -432,15 +513,24 @@ for ($i = 0; $i -lt $InstallerUrls.Count; $i++) {
 }
 
 # Final summary
-Write-Log "Installation process completed" "INFO"
+Write-Log "" "INFO"
+Write-Log "========================================" "INFO"
+Write-Log "Installation Process Completed" "INFO"
+Write-Log "========================================" "INFO"
 Write-Log "Successful installations: $SuccessCount" "SUCCESS"
-Write-Log "Failed installations: $FailureCount" "ERROR"
+Write-Log "Failed installations: $FailureCount" $(if ($FailureCount -gt 0) { "ERROR" } else { "INFO" })
+Write-Log "Skipped installations: $SkippedCount" $(if ($SkippedCount -gt 0) { "WARNING" } else { "INFO" })
 
+# Update progress marker
 if ($FailureCount -eq 0) {
+    "COMPLETED: All installers deployed successfully!" | Out-File -FilePath $ProgressFile -Force
     Write-Log "All installers deployed successfully!" "SUCCESS"
+    Stop-Transcript
     exit 0
 } else {
+    "COMPLETED_WITH_ERRORS: $FailureCount installations failed" | Out-File -FilePath $ProgressFile -Force
     Write-Log "Some installers failed to deploy" "ERROR"
+    Stop-Transcript
     exit 1
 }
 EOF
@@ -457,13 +547,14 @@ deploy_installers() {
     # Create PowerShell script
     create_powershell_script
     
-    # Prepare parameters for PowerShell script
-    local urls_json=$(printf '%s\n' "${INSTALLER_URLS[@]}" | jq -R . | jq -s .)
-    local names_json=$(printf '%s\n' "${INSTALLER_NAMES[@]}" | jq -R . | jq -s .)
-    local types_json=$(printf '%s\n' "${INSTALLER_TYPES[@]}" | jq -R . | jq -s .)
+    # Convert arrays to JSON for PowerShell parameters
+    local urls_json=$(printf '%s\n' "${INSTALLER_URLS[@]}" | jq -R . | jq -s -c .)
+    local names_json=$(printf '%s\n' "${INSTALLER_NAMES[@]}" | jq -R . | jq -s -c .)
+    local types_json=$(printf '%s\n' "${INSTALLER_TYPES[@]}" | jq -R . | jq -s -c .)
+    local args_json=$(printf '%s\n' "${INSTALLER_ARGS[@]}" | jq -R . | jq -s -c .)
     
     # Base64 encode the PowerShell script
-    local base64_script=$(base64 -w 0 "$SCRIPT_DIR/$POWERSHELL_SCRIPT_NAME")
+    local base64_script=$(base64 -w 0 "/tmp/$POWERSHELL_SCRIPT_NAME")
     
     if [ -z "$base64_script" ]; then
         print_error "Failed to base64 encode the PowerShell script"
@@ -472,11 +563,21 @@ deploy_installers() {
     
     print_info "Sending installer deployment command via SSM..."
     
+    # Build the PowerShell command
+    local ps_command="[System.IO.File]::WriteAllText('C:\\temp\\$POWERSHELL_SCRIPT_NAME', [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$base64_script'))); "
+    ps_command+="Set-ExecutionPolicy RemoteSigned -Force; "
+    ps_command+="C:\\temp\\$POWERSHELL_SCRIPT_NAME "
+    ps_command+="-InstallerUrls $urls_json "
+    ps_command+="-InstallerNames $names_json "
+    ps_command+="-InstallerTypes $types_json "
+    ps_command+="-InstallerArgs $args_json"
+    
     # Send command via SSM
     local command_id=$(aws ssm send-command \
         --instance-ids "$instance_id" \
         --document-name "AWS-RunPowerShellScript" \
-        --parameters "commands=[\"[System.IO.File]::WriteAllText('C:\\\\$POWERSHELL_SCRIPT_NAME', [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$base64_script'))); Set-ExecutionPolicy RemoteSigned -Force; C:\\\\$POWERSHELL_SCRIPT_NAME -InstallerUrls $urls_json -InstallerNames $names_json -InstallerTypes $types_json\"]" \
+        --parameters "commands=[\"$ps_command\"]" \
+        --timeout-seconds 3600 \
         --output text \
         --query 'Command.CommandId')
     
@@ -492,57 +593,79 @@ deploy_installers() {
     echo "$command_id" > "$SCRIPT_DIR/last_installer_command_id.txt"
     
     print_success "Installer deployment command sent successfully"
-    print_info "Use 'monitor_installers' function to check progress"
+    print_info "Monitoring installation progress..."
     
-    return "$command_id"
+    # Monitor the deployment
+    monitor_deployment "$instance_id" "$command_id"
 }
 
-# Function to monitor installer deployment progress
-monitor_installers() {
+# Function to monitor deployment progress
+monitor_deployment() {
     local instance_id="$1"
     local command_id="$2"
-    local max_wait=${3:-1800}  # Default 30 minutes
+    local max_wait=${3:-3600}  # Default 60 minutes
     
     local elapsed=0
-    local interval=30
+    local interval=10
+    local last_status=""
     
-    print_info "⏳ Monitoring installer deployment progress..."
+    print_info "⏳ Monitoring installer deployment (timeout: $((max_wait/60)) minutes)..."
     
     while [ $elapsed -lt $max_wait ]; do
         # Check command status
-        local status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" --query 'Status' --output text 2>/dev/null || echo "not-found")
+        local status=$(aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$instance_id" \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "Unknown")
         
-        if [ "$status" = "not-found" ]; then
-            print_error "Command not found or access denied"
-            return 1
+        # Only print if status changed
+        if [ "$status" != "$last_status" ]; then
+            print_progress "Status: $status"
+            last_status="$status"
         fi
         
         case "$status" in
-            "InProgress")
-                if [ $((elapsed % 60)) -eq 0 ]; then
-                    print_progress "Installation still in progress... ($((elapsed / 60)) minutes elapsed)"
-                fi
-                ;;
             "Success")
                 print_success "✅ Installer deployment completed successfully!"
                 
                 # Get command output
                 print_info "Installation Summary:"
-                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" --query 'StandardOutputContent' --output text
+                echo "----------------------------------------"
+                aws ssm get-command-invocation \
+                    --command-id "$command_id" \
+                    --instance-id "$instance_id" \
+                    --query 'StandardOutputContent' \
+                    --output text | tail -50
+                echo "----------------------------------------"
                 
                 return 0
                 ;;
             "Failed"|"Cancelled"|"TimedOut")
-                print_error "Installer deployment failed with status: $status"
+                print_error "❌ Installer deployment failed with status: $status"
                 
                 # Get error output
                 print_error "Error Details:"
-                aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" --query 'StandardErrorContent' --output text
+                echo "----------------------------------------"
+                aws ssm get-command-invocation \
+                    --command-id "$command_id" \
+                    --instance-id "$instance_id" \
+                    --query 'StandardErrorContent' \
+                    --output text
+                echo "----------------------------------------"
                 
                 return 1
                 ;;
+            "InProgress"|"Pending"|"Delayed")
+                # Still running, continue monitoring
+                if [ $((elapsed % 60)) -eq 0 ] && [ $elapsed -gt 0 ]; then
+                    print_info "Still installing... ($((elapsed/60)) minutes elapsed)"
+                fi
+                ;;
             *)
-                print_warning "Unknown status: $status"
+                if [ $((elapsed % 30)) -eq 0 ]; then
+                    print_warning "Unknown status: $status"
+                fi
                 ;;
         esac
         
@@ -550,42 +673,65 @@ monitor_installers() {
         elapsed=$((elapsed + interval))
     done
     
-    print_warning "Timeout after $((max_wait / 60)) minutes"
-    print_warning "Deployment might still be running. Check manually."
+    print_warning "⏱️ Timeout after $((max_wait/60)) minutes"
+    print_warning "Installation might still be running. Check manually with command ID: $command_id"
     
     return 1
 }
 
-# Function to get instance connection information
-get_connection_info() {
+# Function to check installation status
+check_installation_status() {
     local instance_id="$1"
     
-    print_info "Getting instance connection information..."
+    print_info "Checking installation status on instance: $instance_id"
     
-    # Get public IP
-    local public_ip=$(aws ec2 describe-instances --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null || echo "N/A")
+    # Check for progress file
+    local check_command=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters 'commands=["Get-Content C:\\logs\\installer-deployment-progress.txt -ErrorAction SilentlyContinue"]' \
+        --output text \
+        --query 'Command.CommandId')
     
-    # Get private IP
-    local private_ip=$(aws ec2 describe-instances --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text 2>/dev/null || echo "N/A")
+    if [ -n "$check_command" ]; then
+        sleep 5
+        local progress=$(aws ssm get-command-invocation \
+            --command-id "$check_command" \
+            --instance-id "$instance_id" \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null || echo "Unknown")
+        
+        print_info "Installation Progress: $progress"
+    fi
     
-    print_success "Instance Connection Information:"
-    print_info "Instance ID: $instance_id"
-    print_info "Public IP: $public_ip"
-    print_info "Private IP: $private_ip"
+    # Check recent logs
+    local log_command=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters 'commands=["Get-Content C:\\logs\\installer-deployment.log -Tail 20 -ErrorAction SilentlyContinue"]' \
+        --output text \
+        --query 'Command.CommandId')
     
-    if [ "$public_ip" != "N/A" ] && [ "$public_ip" != "None" ]; then
-        print_info "RDP Connection: $public_ip:3389"
-    else
-        print_info "RDP Connection: $private_ip:3389"
+    if [ -n "$log_command" ]; then
+        sleep 5
+        print_info "Recent Installation Logs:"
+        echo "----------------------------------------"
+        aws ssm get-command-invocation \
+            --command-id "$log_command" \
+            --instance-id "$instance_id" \
+            --query 'StandardOutputContent' \
+            --output text
+        echo "----------------------------------------"
     fi
 }
 
 # Main execution function
 main() {
     local instance_id=""
+    local action=""
     
     # Initialize log file
-    echo "Installer Deployment Log - $(date)" > "$LOG_FILE"
+    echo "S3 Installer Deployment Log - $(date)" > "$LOG_FILE"
     
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -594,20 +740,12 @@ main() {
                 show_usage
                 exit 0
                 ;;
-            -e|--environment)
-                ENVIRONMENT="$2"
-                shift 2
-                ;;
             -a|--auto-approve)
                 AUTO_APPROVE=true
                 shift
                 ;;
-            --skip-installer-check)
-                SKIP_INSTALLER_CHECK=true
-                shift
-                ;;
-            -d|--destroy)
-                DESTROY=true
+            --skip-url-check)
+                SKIP_URL_CHECK=true
                 shift
                 ;;
             -l|--list-installers)
@@ -617,6 +755,10 @@ main() {
             --add-installer)
                 add_installer
                 exit 0
+                ;;
+            --check-status)
+                action="check-status"
+                shift
                 ;;
             -*)
                 print_error "Unknown option: $1"
@@ -642,15 +784,21 @@ main() {
         exit 1
     fi
     
-    print_info "🚀 Starting staged installer deployment"
-    print_info "Environment: $ENVIRONMENT"
+    print_info "🚀 Starting S3 Installer Deployment"
     print_info "Instance ID: $instance_id"
+    print_info "Number of installers: ${#INSTALLER_URLS[@]}"
     
     # Check prerequisites
     check_prerequisites
     
     # Validate instance
     validate_instance "$instance_id"
+    
+    # Handle different actions
+    if [ "$action" = "check-status" ]; then
+        check_installation_status "$instance_id"
+        exit 0
+    fi
     
     # List configured installers
     list_installers
@@ -660,28 +808,33 @@ main() {
         exit 0
     fi
     
-    # Validate installer URLs (unless skipped)
-    if [[ "$SKIP_INSTALLER_CHECK" != true ]]; then
-        validate_installer_urls
+    # Validate S3 URLs (unless skipped)
+    if [[ "$SKIP_URL_CHECK" != true ]]; then
+        if ! validate_s3_urls; then
+            print_error "URL validation failed. Use --skip-url-check to bypass."
+            exit 1
+        fi
+    fi
+    
+    # Confirm deployment
+    if [[ "$AUTO_APPROVE" != true ]]; then
+        echo ""
+        print_warning "About to deploy ${#INSTALLER_URLS[@]} installers to instance $instance_id"
+        echo -n "Do you want to continue? (y/N): "
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            print_info "Deployment cancelled"
+            exit 0
+        fi
     fi
     
     # Deploy installers
-    print_info "📦 Stage 1: Deploying installers..."
-    local command_id=$(deploy_installers "$instance_id")
-    
-    # Monitor deployment
-    print_info "📦 Stage 2: Monitoring deployment progress..."
-    if monitor_installers "$instance_id" "$command_id"; then
-        print_success "✅ Installer deployment completed successfully!"
-    else
-        print_warning "⚠️ Installer deployment may have issues. Check logs."
-    fi
-    
-    # Display connection information
-    get_connection_info "$instance_id"
+    print_info "📦 Starting installer deployment..."
+    deploy_installers "$instance_id"
     
     print_success "✅ Deployment process completed!"
-    print_info "Check the log file for detailed information: $LOG_FILE"
+    print_info "Check the log file for details: $LOG_FILE"
+    print_info "Check installation logs on instance: C:\\logs\\installer-deployment.log"
 }
 
 # Execute main function
