@@ -24,9 +24,9 @@ DCV_SESSION_NAME="ue5-session"
 DCV_PORT="8443"
 DCV_SESSION_OWNER="Administrator"
 
-# PowerShell script URLs (update with your actual repository)
-POWERSHELL_SCRIPT_URL="https://raw.githubusercontent.com/YOUR_REPO/dcv_install.ps1"
+# PowerShell script configuration
 POWERSHELL_SCRIPT_NAME="dcv_install.ps1"
+POWERSHELL_SCRIPT_URL="https://raw.githubusercontent.com/YOUR_REPO/dcv_install.ps1"  # Only used for upload method
 
 # Function to log messages
 log_message() {
@@ -83,6 +83,19 @@ check_prerequisites() {
     print_status $GREEN "Instance ID: $INSTANCE_ID"
     print_status $GREEN "Instance State: $instance_state"
     log_message "INFO" "Prerequisites check passed for instance $INSTANCE_ID"
+}
+
+# Function to check if PowerShell script exists locally
+check_powershell_script() {
+    local local_script="$SCRIPT_DIR/$POWERSHELL_SCRIPT_NAME"
+    if [ ! -f "$local_script" ]; then
+        print_status $RED "PowerShell script not found at: $local_script"
+        print_status $YELLOW "Please ensure $POWERSHELL_SCRIPT_NAME is in the same directory as this script"
+        print_status $YELLOW "For the base64 method, the script must be available locally"
+        return 1
+    fi
+    print_status $GREEN "PowerShell script found: $local_script"
+    return 0
 }
 
 # Function to deploy PowerShell script via SSM (Option A: Upload First, Then Execute)
@@ -148,12 +161,12 @@ deploy_via_ssm_base64() {
     print_status $BLUE "Deploying DCV installation via SSM (Base64 Method)..."
     
     # Check if PowerShell script exists locally
-    local local_script="$SCRIPT_DIR/$POWERSHELL_SCRIPT_NAME"
-    if [ ! -f "$local_script" ]; then
-        print_status $RED "PowerShell script not found at: $local_script"
-        print_status $YELLOW "Please ensure dcv_install.ps1 is in the same directory as this script"
+    if ! check_powershell_script; then
         exit 1
     fi
+    
+    # Get the local script path
+    local local_script="$SCRIPT_DIR/$POWERSHELL_SCRIPT_NAME"
     
     # Base64 encode the script
     print_status $YELLOW "Base64 encoding PowerShell script..."

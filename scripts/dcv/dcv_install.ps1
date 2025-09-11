@@ -26,7 +26,7 @@ $DCVDownloadDir = "C:\dcv-install"
 New-Item -ItemType Directory -Force -Path $DCVDownloadDir
 
 # Use latest version URLs
-$DCVServerURL = "https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Clients/nice-dcv-client-Release-2024.0-9431.msi"
+$DCVServerURL = "https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Servers/nice-dcv-server-x64-Release-2024.0-19030.msi"
 $DCVDisplayURL = "https://d1uj6qtbmh3dt5.cloudfront.net/Drivers/nice-dcv-virtual-display-x64-Release-88.msi"
 
 $DCVServerMSI = "$DCVDownloadDir\dcv-server.msi"
@@ -103,43 +103,93 @@ if (Test-Path $DCVPath) {
         
         # Check if console session exists
         if ($sessions -notmatch "console") {
-            Write-Host "No console session found. The automatic session should have been created." -ForegroundColor Yellow
-            Write-Host "Attempting to create one manually..." -ForegroundColor Yellow
+            Write-Host "No console session found. Attempting to create one..." -ForegroundColor Yellow
             
+            # Try to create console session
             $createResult = & $DCVPath create-session --type console --owner $SessionOwner --name "Console Session" console 2>&1
             Write-Host "Session creation result: $createResult" -ForegroundColor Cyan
+            
+            # Wait a moment and verify
+            Start-Sleep -Seconds 3
+            $sessionsAfter = & $DCVPath list-sessions 2>&1
+            Write-Host "Sessions after creation attempt:" -ForegroundColor Green
+            Write-Host $sessionsAfter
+        } else {
+            Write-Host "Console session found successfully!" -ForegroundColor Green
         }
+        
+        # Additional verification - check if DCV is listening on port 8443
+        Write-Host "`nVerifying DCV service status..." -ForegroundColor Yellow
+        $dcvService = Get-Service "DCV Server" -ErrorAction SilentlyContinue
+        if ($dcvService) {
+            Write-Host "DCV Service Status: $($dcvService.Status)" -ForegroundColor Green
+        }
+        
     } catch {
         Write-Host "Error checking sessions: $_" -ForegroundColor Red
     }
+} else {
+    Write-Host "DCV executable not found at expected path: $DCVPath" -ForegroundColor Red
 }
 
 # Display network status
 Write-Host "`nNetwork Status:" -ForegroundColor Green
-$ports = netstat -an | findstr :8443
-Write-Host $ports
+try {
+    $ports = netstat -an | findstr :8443
+    if ($ports) {
+        Write-Host $ports
+    } else {
+        Write-Host "No processes listening on port 8443" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "Error checking network status: $_" -ForegroundColor Red
+}
 
 # Display firewall rules
 Write-Host "`nFirewall Rules:" -ForegroundColor Green
-Get-NetFirewallRule -DisplayName "DCV*" | Select-Object DisplayName, Enabled, Direction, Action | Format-Table
+try {
+    $firewallRules = Get-NetFirewallRule -DisplayName "DCV*" -ErrorAction SilentlyContinue
+    if ($firewallRules) {
+        $firewallRules | Select-Object DisplayName, Enabled, Direction, Action | Format-Table
+    } else {
+        Write-Host "No DCV firewall rules found" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "Error checking firewall rules: $_" -ForegroundColor Red
+}
 
 # Get instance metadata for connection info
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "DCV Installation Complete!" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Cyan
+
 try {
-    $instanceId = Invoke-RestMethod -Uri http://169.254.169.254/latest/meta-data/instance-id -TimeoutSec 2
-    $publicIP = Invoke-RestMethod -Uri http://169.254.169.254/latest/meta-data/public-ipv4 -TimeoutSec 2
+    # Try IMDSv2 first (more secure)
+    $token = Invoke-RestMethod -Uri "http://169.254.169.254/latest/api/token" -Method PUT -Headers @{"X-aws-ec2-metadata-token-ttl-seconds" = "21600"} -TimeoutSec 5
+    $headers = @{"X-aws-ec2-metadata-token" = $token}
     
-    Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "DCV Installation Complete!" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Cyan
+    $instanceId = Invoke-RestMethod -Uri "http://169.254.169.254/latest/meta-data/instance-id" -Headers $headers -TimeoutSec 5
+    $publicIP = Invoke-RestMethod -Uri "http://169.254.169.254/latest/meta-data/public-ipv4" -Headers $headers -TimeoutSec 5
+    
     Write-Host "Instance ID: $instanceId" -ForegroundColor Yellow
     Write-Host "Connection URL: https://${publicIP}:8443" -ForegroundColor Yellow
-    Write-Host "Username: $SessionOwner" -ForegroundColor Yellow
-    Write-Host "Password: Retrieved from Systems Manager Parameter Store" -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Cyan
 } catch {
-    Write-Host "`nDCV Installation Complete!" -ForegroundColor Green
-    Write-Host "Connect using: https://<instance-public-ip>:8443" -ForegroundColor Yellow
-    Write-Host "Username: $SessionOwner" -ForegroundColor Yellow
+    try {
+        # Fallback to IMDSv1
+        Write-Host "IMDSv2 failed, trying IMDSv1..." -ForegroundColor Yellow
+        $instanceId = Invoke-RestMethod -Uri "http://169.254.169.254/latest/meta-data/instance-id" -TimeoutSec 5
+        $publicIP = Invoke-RestMethod -Uri "http://169.254.169.254/latest/meta-data/public-ipv4" -TimeoutSec 5
+        
+        Write-Host "Instance ID: $instanceId" -ForegroundColor Yellow
+        Write-Host "Connection URL: https://${publicIP}:8443" -ForegroundColor Yellow
+    } catch {
+        Write-Host "Could not retrieve instance metadata: $_" -ForegroundColor Yellow
+        Write-Host "Connect using: https://<instance-public-ip>:8443" -ForegroundColor Yellow
+    }
 }
+
+Write-Host "Username: $SessionOwner" -ForegroundColor Yellow
+Write-Host "Password: Retrieved from Systems Manager Parameter Store" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Cyan
 
 Stop-Transcript
