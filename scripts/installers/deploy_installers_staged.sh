@@ -30,7 +30,11 @@ declare -a INSTALLER_URLS=(
     # Add your S3 installer URLs here
     # Example: "https://s3.amazonaws.com/your-bucket/installers/NiceDCV/Amazon DCV 2024.0 Client/Windows x86_64/Version 2024.0-9431/nice-dcv-client-Release.msi"
     # Example: "https://s3.amazonaws.com/your-bucket/installers/CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
-    # Leave empty for now as requested
+    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/CMake/Windows+x86_64/Version+4.1.1/cmake-4.1.1-windows-x86_64.msi
+    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Git/Windows+x86_64/Version+2.51.0/Git-2.51.0-64-bit.exe
+    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/NASM/Windows+x86_64/Version+2.16.03/nasm-2.16.03-installer-x64.exe
+    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Python+Manager/Windows+x86_64/Version+25.0b14/python-manager-25.0b14.msi
+    https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Strawberry+Perl/Windows+x86_64/Version+5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi
 )
 
 # Array of installer names (corresponding to INSTALLER_URLS array)
@@ -38,7 +42,11 @@ declare -a INSTALLER_NAMES=(
     # Add descriptive names for your installers
     # Example: "NiceDCV Client"
     # Example: "CMake"
-    # Leave empty for now as requested
+    "CMake"
+    "Git"
+    "NASM"
+    "Python Manager"
+    "Strawberry Perl"
 )
 
 # Array of installer types (msi, exe, zip, etc.)
@@ -46,7 +54,11 @@ declare -a INSTALLER_TYPES=(
     # Add installer types corresponding to URLs
     # Example: "msi"
     # Example: "msi"
-    # Leave empty for now as requested
+    "msi"
+    "exe"
+    "exe"
+    "msi"
+    "msi"
 )
 
 # PowerShell script for installer execution
@@ -283,6 +295,12 @@ if (!(Test-Path $LogDir)) {
 
 $LogFile = "$LogDir\installer-deployment.log"
 
+# Set up download directory
+$DCVDownloadDir = "C:\downloads"
+if (!(Test-Path $DCVDownloadDir)) {
+    New-Item -ItemType Directory -Path $DCVDownloadDir -Force
+}
+
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -301,11 +319,8 @@ function Download-Installer {
     Write-Log "Starting download: $Name" "INFO"
     
     try {
-        # Create downloads directory
-        $DownloadDir = "C:\downloads"
-        if (!(Test-Path $DownloadDir)) {
-            New-Item -ItemType Directory -Path $DownloadDir -Force
-        }
+        # Use the DCV download directory
+        $DownloadDir = $DCVDownloadDir
         
         # Extract filename from URL
         $FileName = Split-Path $Url -Leaf

@@ -26,8 +26,8 @@ $DCVDownloadDir = "C:\dcv-install"
 New-Item -ItemType Directory -Force -Path $DCVDownloadDir
 
 # Use latest version URLs
-$DCVServerURL = "https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Servers/nice-dcv-server-x64-Release-2024.0-17979.msi"
-$DCVDisplayURL = "https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-virtual-display-x64-Release.msi"
+$DCVServerURL = "https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Clients/nice-dcv-client-Release-2024.0-9431.msi"
+$DCVDisplayURL = "https://d1uj6qtbmh3dt5.cloudfront.net/Drivers/nice-dcv-virtual-display-x64-Release-88.msi"
 
 $DCVServerMSI = "$DCVDownloadDir\dcv-server.msi"
 $DCVDisplayMSI = "$DCVDownloadDir\dcv-display.msi"

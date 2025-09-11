@@ -15,14 +15,20 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # Array of S3 folder paths (you can modify these as needed)
 declare -a S3_PATHS=(
-    "CMake/Windows x86_64/Version 4.1.1"
+    "Python Manager/Windows x86_64/Version 25.0b14"
+    "Strawberry Perl/Windows x86_64/Version 5.40.2.1"
+    "NASM/Windows x86_64/Version 2.16.03"
+    "Git/Windows x86_64/Version 2.51.0"
     # Add more paths here as needed
 )
 
 # Array of installer URLs (corresponding to S3_PATHS array)
 # Empty string means no installer to download for that path
 declare -a INSTALLER_URLS=(
-    "https://github.com/Kitware/CMake/releases/download/v4.1.1/cmake-4.1.1-windows-x86_64.msi"  # CMake installer
+    "https://www.python.org/ftp/python/pymanager/python-manager-25.0b14.msi" # Python Manager installer
+    "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54021_64bit_UCRT/strawberry-perl-5.40.2.1-64bit.msi" # Strawberry Perl installer
+    "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-installer-x64.exe" # NASM installer
+    "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git-2.51.0-64-bit.exe" # Git installer
     # Add more URLs here as needed
 )
 
