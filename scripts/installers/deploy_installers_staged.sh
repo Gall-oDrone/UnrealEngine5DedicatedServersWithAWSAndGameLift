@@ -22,16 +22,24 @@ LOG_FILE="$SCRIPT_DIR/installer_deployment.log"
 AUTO_APPROVE=false
 SKIP_URL_CHECK=false
 
-# Array of S3 installer URLs
-declare -a INSTALLER_URLS=(
-    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/CMake/Windows+x86_64/Version+4.1.1/cmake-4.1.1-windows-x86_64.msi"
-    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Git/Windows+x86_64/Version+2.51.0/Git-2.51.0-64-bit.exe"
-    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/NASM/Windows+x86_64/Version+2.16.03/nasm-2.16.03-installer-x64.exe"
-    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Python+Manager/Windows+x86_64/Version+25.0b14/python-manager-25.0b14.msi"
-    "https://installers-1757543545-28881.s3.us-east-1.amazonaws.com/Strawberry+Perl/Windows+x86_64/Version+5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
+# S3 Access Point configuration
+S3_ACCESS_POINT_ALIAS=""
+S3_ACCESS_POINT_ARN=""
+AWS_REGION=""
+
+# Array of S3 object keys (you can modify these as needed)
+declare -a INSTALLER_KEYS=(
+    # Add your S3 object keys here
+    # Example: "NiceDCV/Amazon DCV 2024.0 Client/Windows x86_64/Version 2024.0-9431/nice-dcv-client-Release.msi"
+    # Example: "CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
+    "CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
+    "Git/Windows x86_64/Version 2.51.0/Git-2.51.0-64-bit.exe"
+    "NASM/Windows x86_64/Version 2.16.03/nasm-2.16.03-installer-x64.exe"
+    "Python Manager/Windows x86_64/Version 25.0b14/python-manager-25.0b14.msi"
+    "Strawberry Perl/Windows x86_64/Version 5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
 )
 
-# Array of installer names (corresponding to INSTALLER_URLS array)
+# Array of installer names (corresponding to INSTALLER_KEYS array)
 declare -a INSTALLER_NAMES=(
     "CMake"
     "Git for Windows"
@@ -40,7 +48,7 @@ declare -a INSTALLER_NAMES=(
     "Strawberry Perl"
 )
 
-# Array of installer types (msi, exe, zip, etc.)
+# Array of installer types (corresponding to INSTALLER_KEYS array)
 declare -a INSTALLER_TYPES=(
     "msi"
     "exe"
@@ -207,13 +215,13 @@ list_installers() {
     print_info "Configured Installers:"
     print_info "====================="
     
-    if [ ${#INSTALLER_URLS[@]} -eq 0 ]; then
+    if [ ${#INSTALLER_KEYS[@]} -eq 0 ]; then
         print_warning "No installers configured"
         return 0
     fi
     
-    for i in "${!INSTALLER_URLS[@]}"; do
-        local url="${INSTALLER_URLS[$i]}"
+    for i in "${!INSTALLER_KEYS[@]}"; do
+        local key="${INSTALLER_KEYS[$i]}"
         local name="${INSTALLER_NAMES[$i]:-Unnamed}"
         local type="${INSTALLER_TYPES[$i]:-Unknown}"
         local args="${INSTALLER_ARGS[$i]:-Default}"
@@ -222,7 +230,7 @@ list_installers() {
         echo "  [$((i+1))] $name"
         echo "      Type: $type"
         echo "      Args: $args"
-        echo "      URL: $url"
+        echo "      S3 Key: $key"
     done
     echo ""
 }
@@ -234,8 +242,8 @@ add_installer() {
     echo -n "Enter installer name: "
     read -r installer_name
     
-    echo -n "Enter S3 URL: "
-    read -r installer_url
+    echo -n "Enter S3 object key: "
+    read -r installer_key
     
     echo -n "Enter installer type (msi, exe, zip, etc.): "
     read -r installer_type
@@ -243,53 +251,53 @@ add_installer() {
     echo -n "Enter silent install arguments (e.g., /quiet for MSI): "
     read -r installer_args
     
-    # Validate URL
-    if [[ ! "$installer_url" =~ ^https?:// ]]; then
-        print_error "Invalid URL format"
+    # Validate key (basic check for non-empty)
+    if [ -z "$installer_key" ]; then
+        print_error "S3 object key cannot be empty"
         return 1
     fi
     
     # Add to arrays
-    INSTALLER_URLS+=("$installer_url")
+    INSTALLER_KEYS+=("$installer_key")
     INSTALLER_NAMES+=("$installer_name")
     INSTALLER_TYPES+=("$installer_type")
     INSTALLER_ARGS+=("$installer_args")
     
     print_success "Installer added successfully"
     print_info "Name: $installer_name"
-    print_info "URL: $installer_url"
+    print_info "S3 Key: $installer_key"
     print_info "Type: $installer_type"
     print_info "Args: $installer_args"
     
     print_warning "Note: To persist this installer, manually add it to the script arrays"
 }
 
-# Function to validate S3 URLs
-validate_s3_urls() {
-    if [ ${#INSTALLER_URLS[@]} -eq 0 ]; then
+# Function to validate S3 object keys
+validate_s3_keys() {
+    if [ ${#INSTALLER_KEYS[@]} -eq 0 ]; then
         print_warning "No installers configured"
         return 0
     fi
     
-    print_info "Validating S3 URLs..."
+    print_info "Validating S3 object keys..."
     
     local failed_count=0
-    for i in "${!INSTALLER_URLS[@]}"; do
-        local url="${INSTALLER_URLS[$i]}"
+    for i in "${!INSTALLER_KEYS[@]}"; do
+        local key="${INSTALLER_KEYS[$i]}"
         local name="${INSTALLER_NAMES[$i]:-Unnamed}"
         
-        if [ -z "$url" ]; then
-            print_warning "Skipping empty URL for installer: $name"
+        if [ -z "$key" ]; then
+            print_warning "Skipping empty key for installer: $name"
             continue
         fi
         
         print_progress "Checking: $name"
         
-        # Test URL accessibility (HEAD request)
-        if curl -s --head "$url" | head -n 1 | grep -qE "200|302|301"; then
-            print_success "  ✅ $name - URL accessible"
+        # Test S3 object accessibility using AWS CLI
+        if aws s3api head-object --bucket "$S3_ACCESS_POINT_ARN" --key "$key" --region "$AWS_REGION" &>/dev/null; then
+            print_success "  ✅ $name - S3 object accessible"
         else
-            print_error "  ❌ $name - URL not accessible"
+            print_error "  ❌ $name - S3 object not accessible"
             ((failed_count++))
         fi
     done
@@ -316,10 +324,12 @@ create_powershell_script() {
 # This script downloads and installs software from S3 URLs
 
 param(
-    [string[]]$InstallerUrls = @(),
+    [string[]]$InstallerKeys = @(),
     [string[]]$InstallerNames = @(),
     [string[]]$InstallerTypes = @(),
-    [string[]]$InstallerArgs = @()
+    [string[]]$InstallerArgs = @(),
+    [string]$S3AccessPointArn = "",
+    [string]$AwsRegion = "us-east-1"
 )
 
 # Set up logging
@@ -351,32 +361,32 @@ function Write-Log {
 
 function Download-Installer {
     param(
-        [string]$Url,
+        [string]$S3Key,
         [string]$Name
     )
     
     Write-Log "Downloading: $Name" "INFO"
     
     try {
-        # Extract filename from URL and decode URL encoding
-        $EncodedFileName = Split-Path $Url -Leaf
-        $FileName = [System.Web.HttpUtility]::UrlDecode($EncodedFileName)
+        # Extract filename from S3 key
+        $FileName = Split-Path $S3Key -Leaf
         $FilePath = "$DownloadDir\$FileName"
         
-        Write-Log "  Source: $Url" "INFO"
+        Write-Log "  S3 Key: $S3Key" "INFO"
         Write-Log "  Destination: $FilePath" "INFO"
         
-        # Download file with progress
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $Url -OutFile $FilePath -UseBasicParsing
-        $ProgressPreference = 'Continue'
+        # Download file from S3 using AWS CLI
+        $awsCommand = "aws s3api get-object --bucket `"$S3AccessPointArn`" --key `"$S3Key`" `"$FilePath`" --region `"$AwsRegion`""
+        Write-Log "  Executing: $awsCommand" "DEBUG"
         
-        if (Test-Path $FilePath) {
+        $result = Invoke-Expression $awsCommand
+        
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $FilePath)) {
             $FileSize = (Get-Item $FilePath).Length / 1MB
             Write-Log "  Download completed: $Name (${FileSize}MB)" "SUCCESS"
             return $FilePath
         } else {
-            Write-Log "  Download failed: $Name" "ERROR"
+            Write-Log "  Download failed: $Name (Exit code: $LASTEXITCODE)" "ERROR"
             return $null
         }
     }
