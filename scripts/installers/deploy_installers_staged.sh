@@ -23,9 +23,9 @@ AUTO_APPROVE=false
 SKIP_URL_CHECK=false
 
 # S3 Access Point configuration
-S3_ACCESS_POINT_ALIAS=""
-S3_ACCESS_POINT_ARN=""
-AWS_REGION=""
+S3_ACCESS_POINT_ALIAS="your-access-point-alias-s3alias"
+S3_ACCESS_POINT_ARN="arn:aws:s3:us-east-1:123456789012:accesspoint/your-access-point-name"
+AWS_REGION="us-east-1"
 
 # Array of S3 object keys (you can modify these as needed)
 declare -a INSTALLER_KEYS=(
@@ -37,6 +37,12 @@ declare -a INSTALLER_KEYS=(
     "NASM/Windows x86_64/Version 2.16.03/nasm-2.16.03-installer-x64.exe"
     "Python Manager/Windows x86_64/Version 25.0b14/python-manager-25.0b14.msi"
     "Strawberry Perl/Windows x86_64/Version 5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
+)
+
+# Array of installer URLs (for backward compatibility and validation)
+declare -a INSTALLER_URLS=(
+    # These will be constructed from INSTALLER_KEYS and S3_ACCESS_POINT_ALIAS
+    # Example: "https://your-access-point-alias-s3alias.s3.us-east-1.amazonaws.com/CMake/Windows%20x86_64/Version%204.1.1/cmake-4.1.1-windows-x86_64.msi"
 )
 
 # Array of installer names (corresponding to INSTALLER_KEYS array)
@@ -134,6 +140,19 @@ NOTES:
     - S3 URLs must be publicly accessible or instance must have S3 access
 
 EOF
+}
+
+# Function to build URLs from S3 keys
+build_installer_urls() {
+    INSTALLER_URLS=()
+    for key in "${INSTALLER_KEYS[@]}"; do
+        if [ -n "$key" ] && [ -n "$S3_ACCESS_POINT_ALIAS" ]; then
+            # URL encode the key for the URL
+            local encoded_key=$(echo "$key" | sed 's/ /%20/g')
+            local url="https://${S3_ACCESS_POINT_ALIAS}.s3.${AWS_REGION}.amazonaws.com/${encoded_key}"
+            INSTALLER_URLS+=("$url")
+        fi
+    done
 }
 
 # Function to check prerequisites
@@ -324,10 +343,11 @@ create_powershell_script() {
 # This script downloads and installs software from S3 URLs
 
 param(
-    [string[]]$InstallerKeys = @(),
+    [string[]]$InstallerUrls = @(),
     [string[]]$InstallerNames = @(),
     [string[]]$InstallerTypes = @(),
     [string[]]$InstallerArgs = @(),
+    [string[]]$InstallerKeys = @(),
     [string]$S3AccessPointArn = "",
     [string]$AwsRegion = "us-east-1"
 )
@@ -361,6 +381,7 @@ function Write-Log {
 
 function Download-Installer {
     param(
+        [string]$Url,
         [string]$S3Key,
         [string]$Name
     )
@@ -368,18 +389,24 @@ function Download-Installer {
     Write-Log "Downloading: $Name" "INFO"
     
     try {
-        # Extract filename from S3 key
-        $FileName = Split-Path $S3Key -Leaf
+        # Extract filename from S3 key or URL
+        $FileName = if ($S3Key) { Split-Path $S3Key -Leaf } else { Split-Path $Url -Leaf }
         $FilePath = "$DownloadDir\$FileName"
         
         Write-Log "  S3 Key: $S3Key" "INFO"
+        Write-Log "  URL: $Url" "INFO"
         Write-Log "  Destination: $FilePath" "INFO"
         
-        # Download file from S3 using AWS CLI
-        $awsCommand = "aws s3api get-object --bucket `"$S3AccessPointArn`" --key `"$S3Key`" `"$FilePath`" --region `"$AwsRegion`""
-        Write-Log "  Executing: $awsCommand" "DEBUG"
-        
-        $result = Invoke-Expression $awsCommand
+        # Download file from S3 using AWS CLI with access point
+        if ($S3Key -and $S3AccessPointArn) {
+            $awsCommand = "aws s3api get-object --bucket `"$S3AccessPointArn`" --key `"$S3Key`" `"$FilePath`" --region `"$AwsRegion`""
+            Write-Log "  Executing: $awsCommand" "DEBUG"
+            $result = Invoke-Expression $awsCommand
+        } else {
+            # Fallback to URL download
+            Write-Log "  Downloading from URL: $Url" "INFO"
+            Invoke-WebRequest -Uri $Url -OutFile $FilePath -UseBasicParsing
+        }
         
         if ($LASTEXITCODE -eq 0 -and (Test-Path $FilePath)) {
             $FileSize = (Get-Item $FilePath).Length / 1MB
@@ -478,12 +505,13 @@ $ProgressFile = "$LogDir\installer-deployment-progress.txt"
 
 for ($i = 0; $i -lt $InstallerUrls.Count; $i++) {
     $Url = $InstallerUrls[$i]
+    $S3Key = if ($i -lt $InstallerKeys.Count) { $InstallerKeys[$i] } else { "" }
     $Name = if ($i -lt $InstallerNames.Count) { $InstallerNames[$i] } else { "Installer $($i+1)" }
     $Type = if ($i -lt $InstallerTypes.Count) { $InstallerTypes[$i] } else { "unknown" }
     $InstallArgs = if ($i -lt $InstallerArgs.Count) { $InstallerArgs[$i] } else { "" }
     
-    if ([string]::IsNullOrEmpty($Url)) {
-        Write-Log "Skipping empty URL for: $Name" "WARNING"
+    if ([string]::IsNullOrEmpty($Url) -and [string]::IsNullOrEmpty($S3Key)) {
+        Write-Log "Skipping empty URL and S3 key for: $Name" "WARNING"
         $SkippedCount++
         continue
     }
@@ -496,7 +524,7 @@ for ($i = 0; $i -lt $InstallerUrls.Count; $i++) {
     "INSTALLING: $Name ($($i+1)/$($InstallerUrls.Count))" | Out-File -FilePath $ProgressFile -Force
     
     # Download installer
-    $FilePath = Download-Installer -Url $Url -Name $Name
+    $FilePath = Download-Installer -Url $Url -S3Key $S3Key -Name $Name
     
     if ($FilePath) {
         # Install software
@@ -557,8 +585,12 @@ deploy_installers() {
     # Create PowerShell script
     create_powershell_script
     
+    # Build URLs from S3 keys
+    build_installer_urls
+    
     # Convert arrays to JSON for PowerShell parameters
     local urls_json=$(printf '%s\n' "${INSTALLER_URLS[@]}" | jq -R . | jq -s -c .)
+    local keys_json=$(printf '%s\n' "${INSTALLER_KEYS[@]}" | jq -R . | jq -s -c .)
     local names_json=$(printf '%s\n' "${INSTALLER_NAMES[@]}" | jq -R . | jq -s -c .)
     local types_json=$(printf '%s\n' "${INSTALLER_TYPES[@]}" | jq -R . | jq -s -c .)
     local args_json=$(printf '%s\n' "${INSTALLER_ARGS[@]}" | jq -R . | jq -s -c .)
@@ -578,9 +610,12 @@ deploy_installers() {
     ps_command+="Set-ExecutionPolicy RemoteSigned -Force; "
     ps_command+="C:\\temp\\$POWERSHELL_SCRIPT_NAME "
     ps_command+="-InstallerUrls $urls_json "
+    ps_command+="-InstallerKeys $keys_json "
     ps_command+="-InstallerNames $names_json "
     ps_command+="-InstallerTypes $types_json "
-    ps_command+="-InstallerArgs $args_json"
+    ps_command+="-InstallerArgs $args_json "
+    ps_command+="-S3AccessPointArn $S3_ACCESS_POINT_ARN "
+    ps_command+="-AwsRegion $AWS_REGION"
     
     # Send command via SSM
     local command_id=$(aws ssm send-command \
@@ -810,6 +845,11 @@ main() {
         exit 0
     fi
     
+    # Build URLs from S3 keys if not already built
+    if [ ${#INSTALLER_URLS[@]} -eq 0 ] && [ ${#INSTALLER_KEYS[@]} -gt 0 ]; then
+        build_installer_urls
+    fi
+    
     # List configured installers
     list_installers
     
@@ -818,10 +858,10 @@ main() {
         exit 0
     fi
     
-    # Validate S3 URLs (unless skipped)
+    # Validate S3 keys and URLs (unless skipped)
     if [[ "$SKIP_URL_CHECK" != true ]]; then
-        if ! validate_s3_urls; then
-            print_error "URL validation failed. Use --skip-url-check to bypass."
+        if ! validate_s3_keys; then
+            print_error "S3 key validation failed. Use --skip-url-check to bypass."
             exit 1
         fi
     fi
