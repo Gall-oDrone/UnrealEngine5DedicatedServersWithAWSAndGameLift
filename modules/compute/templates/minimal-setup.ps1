@@ -44,12 +44,49 @@ Start-Sleep -Seconds 30
 $ssmStatus = Get-Service -Name "AmazonSSMAgent" | Select-Object -ExpandProperty Status
 Write-Output "SSM Agent Status: $ssmStatus"
 
-# Create completion marker with SSM status
+# Install AWS CLI for Windows
+Write-Output "Installing AWS CLI..."
+$progressPreference = 'SilentlyContinue'
+try {
+    # Download AWS CLI installer
+    Invoke-WebRequest `
+        -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" `
+        -OutFile "$env:TEMP\AWSCLIV2.msi"
+    
+    # Install AWS CLI silently
+    Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$env:TEMP\AWSCLIV2.msi`" /quiet /norestart" -Wait
+    
+    # Add AWS CLI to PATH for current session
+    $env:PATH += ";C:\Program Files\Amazon\AWSCLIV2"
+    
+    # Verify AWS CLI installation
+    $awsVersion = & "C:\Program Files\Amazon\AWSCLIV2\aws.exe" --version 2>$null
+    if ($awsVersion) {
+        Write-Output "AWS CLI installed successfully: $($awsVersion[0])"
+    } else {
+        Write-Output "AWS CLI installation may have failed"
+    }
+} catch {
+    Write-Output "Error installing AWS CLI: $($_.Exception.Message)"
+}
+
+# Create completion marker with SSM and AWS CLI status
+$awsCliStatus = "Not Installed"
+try {
+    $awsVersion = & "C:\Program Files\Amazon\AWSCLIV2\aws.exe" --version 2>$null
+    if ($awsVersion) {
+        $awsCliStatus = "Installed"
+    }
+} catch {
+    $awsCliStatus = "Error"
+}
+
 $marker = @{
     Timestamp = Get-Date
     Status = "Ready"
     Instance = $env:COMPUTERNAME
     SSMAgent = $ssmStatus.ToString()
+    AWSCLI = $awsCliStatus
 }
 $marker | ConvertTo-Json | Out-File -FilePath "C:\setup-complete.json"
 
