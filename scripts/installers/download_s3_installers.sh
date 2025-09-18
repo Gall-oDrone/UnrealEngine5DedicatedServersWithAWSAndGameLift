@@ -31,29 +31,17 @@ S3_ACCESS_POINT_ARN="${S3_ACCESS_POINT_ARN:-arn:aws:s3:us-east-1:326105557351:ac
 # SSM Document name for downloading
 SSM_DOC_DOWNLOAD="DownloadS3Installers"
 
-# Software configuration arrays
+# Software configuration arrays - DEBUGGING: Only CMake for now
 declare -a SOFTWARE_KEYS=(
     "CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
-    "Git/Windows x86_64/Version 2.51.0/Git-2.51.0-64-bit.exe"
-    "NASM/Windows x86_64/Version 2.16.03/nasm-2.16.03-installer-x64.exe"
-    "Python Manager/Windows x86_64/Version 25.0b14/python-manager-25.0b14.msi"
-    "Strawberry Perl/Windows x86_64/Version 5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
 )
 
 declare -a SOFTWARE_NAMES=(
     "CMake"
-    "Git for Windows"
-    "NASM Assembler"
-    "Python Manager"
-    "Strawberry Perl"
 )
 
 declare -a SOFTWARE_DESTINATIONS=(
     "C:\\downloads\\cmake"
-    "C:\\downloads\\git"
-    "C:\\downloads\\nasm"
-    "C:\\downloads\\python"
-    "C:\\downloads\\perl"
 )
 
 # Function to log messages
