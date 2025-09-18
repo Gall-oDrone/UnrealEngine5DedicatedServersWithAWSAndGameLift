@@ -292,42 +292,95 @@ validate_s3_objects() {
 register_ssm_document() {
     print_info "Registering SSM document: $SSM_DOC_DOWNLOAD"
     
-    local doc_file="$SCRIPT_DIR/ssm_doc_download_s3_installers.json"
+    # GitHub raw URL for the SSM document
+    local ssm_doc_url="https://raw.githubusercontent.com/your-username/your-repo/main/scripts/installers/ssm_doc_download_s3_installers.json"
     
-    if [[ ! -f "$doc_file" ]]; then
-        print_error "SSM document file not found: $doc_file"
-        print_info "Please create the SSM document file first"
+    # Download the document content
+    print_progress "Downloading SSM document from GitHub..."
+    local doc_content=$(curl -s "$ssm_doc_url")
+    
+    if [[ -z "$doc_content" ]] || [[ "$doc_content" == *"404"* ]]; then
+        print_error "Failed to download SSM document from: $ssm_doc_url"
+        print_info "Please check the URL and ensure the file exists in your repository"
         return 1
     fi
+    
+    # Validate JSON content
+    if ! echo "$doc_content" | jq . >/dev/null 2>&1; then
+        print_error "Downloaded content is not valid JSON"
+        return 1
+    fi
+    
+    print_success "SSM document downloaded successfully"
     
     # Check if document already exists
     if aws ssm describe-document \
         --name "$SSM_DOC_DOWNLOAD" \
         --region "$AWS_REGION" &>/dev/null; then
-        print_warning "Document already exists, updating..."
+        print_warning "Document already exists, attempting to update..."
         
-        # Update existing document
-        if aws ssm update-document \
+        # Try to update existing document
+        local update_result=$(echo "$doc_content" | aws ssm update-document \
             --name "$SSM_DOC_DOWNLOAD" \
-            --content "file://$doc_file" \
+            --content file:///dev/stdin \
             --document-version "\$LATEST" \
-            --region "$AWS_REGION" &>/dev/null; then
+            --region "$AWS_REGION" 2>&1)
+        
+        if [[ $? -eq 0 ]]; then
             print_success "✅ Updated: $SSM_DOC_DOWNLOAD"
         else
             print_error "❌ Failed to update: $SSM_DOC_DOWNLOAD"
-            return 1
+            print_error "Update error: $update_result"
+            
+            # Try alternative approach: delete and recreate
+            print_warning "Attempting to delete and recreate document..."
+            
+            # Delete existing document
+            local delete_result=$(aws ssm delete-document \
+                --name "$SSM_DOC_DOWNLOAD" \
+                --region "$AWS_REGION" 2>&1)
+            
+            if [[ $? -eq 0 ]]; then
+                print_info "Document deleted successfully"
+                
+                # Wait a moment for deletion to propagate
+                sleep 2
+                
+                # Create new document
+                local create_result=$(echo "$doc_content" | aws ssm create-document \
+                    --name "$SSM_DOC_DOWNLOAD" \
+                    --document-type "Command" \
+                    --content file:///dev/stdin \
+                    --document-format "JSON" \
+                    --region "$AWS_REGION" 2>&1)
+                
+                if [[ $? -eq 0 ]]; then
+                    print_success "✅ Recreated: $SSM_DOC_DOWNLOAD"
+                else
+                    print_error "❌ Failed to recreate: $SSM_DOC_DOWNLOAD"
+                    print_error "Create error: $create_result"
+                    return 1
+                fi
+            else
+                print_error "❌ Failed to delete document: $delete_result"
+                return 1
+            fi
         fi
     else
         # Create new document
-        if aws ssm create-document \
+        print_progress "Creating new document..."
+        local create_result=$(echo "$doc_content" | aws ssm create-document \
             --name "$SSM_DOC_DOWNLOAD" \
             --document-type "Command" \
-            --content "file://$doc_file" \
+            --content file:///dev/stdin \
             --document-format "JSON" \
-            --region "$AWS_REGION" &>/dev/null; then
+            --region "$AWS_REGION" 2>&1)
+        
+        if [[ $? -eq 0 ]]; then
             print_success "✅ Created: $SSM_DOC_DOWNLOAD"
         else
             print_error "❌ Failed to create: $SSM_DOC_DOWNLOAD"
+            print_error "Create error: $create_result"
             return 1
         fi
     fi
@@ -342,9 +395,18 @@ download_installers() {
     print_info "📦 Downloading installers from S3..."
     
     # Prepare parameters for SSM document
+    # Build parameter JSON for StringList parameters
     local keys_json=$(printf '%s\n' "${SOFTWARE_KEYS[@]}" | jq -R . | jq -s -c .)
     local names_json=$(printf '%s\n' "${SOFTWARE_NAMES[@]}" | jq -R . | jq -s -c .)
     local destinations_json=$(printf '%s\n' "${SOFTWARE_DESTINATIONS[@]}" | jq -R . | jq -s -c .)
+    
+    # Debug: Print parameter values
+    print_info "Parameters being sent:"
+    print_info "  S3BucketArn: $S3_ACCESS_POINT_ARN"
+    print_info "  SoftwareKeys: $keys_json"
+    print_info "  SoftwareNames: $names_json"
+    print_info "  DownloadPaths: $destinations_json"
+    print_info "  Region: $AWS_REGION"
     
     # Execute download SSM document
     print_progress "Executing download command..."
