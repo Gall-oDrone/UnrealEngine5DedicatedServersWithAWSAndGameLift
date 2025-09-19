@@ -1,12 +1,13 @@
 #!/bin/bash
 
-# Debug CMake Download Script
-# Simplified script to debug CMake download from S3 access point
+# S3 Installers Download Script
+# Downloads and installs software from S3 using SSM documents
+# Supports both single document (debug) and individual document modes
 #
 # REQUIREMENTS:
 #   - AWS CLI installed and configured
 #   - jq installed for JSON processing  
-#   - ssm_doc_download_cmake_debug.json file in the same directory as this script
+#   - SSM document JSON files in the ssm/ subdirectory
 
 set -euo pipefail
 
@@ -20,7 +21,8 @@ NC='\033[0m' # No Color
 
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="$SCRIPT_DIR/cmake_debug_$(date +%Y%m%d_%H%M%S).log"
+LOGS_DIR="$SCRIPT_DIR/logs"
+LOG_FILE="$LOGS_DIR/installer_deployment_$(date +%Y%m%d_%H%M%S).log"
 
 # Default values
 AWS_REGION="${AWS_REGION:-us-east-1}"
@@ -34,7 +36,7 @@ CONTINUE_ON_ERROR=false
 EXECUTION_MODE="debug"  # "debug" for single document, "individual" for separate documents
 
 # SSM Document name for debugging (single document approach)
-SSM_DOC_DEBUG="DebugCMakeDownload"
+SSM_DOC_DEBUG="DownloadS3Installers"
 
 # SSM Documents directory for individual documents
 SSM_DOCS_DIR="$SCRIPT_DIR/ssm"
@@ -70,33 +72,48 @@ declare -A INSTALLER_CONFIGS=(
     ["cmake_name"]="CMake"
     ["cmake_key"]="CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
     ["cmake_destination"]="C:/downloads/cmake"
-    ["cmake_doc_name"]="InstallCMake"
+    ["cmake_doc_name"]="DownloadCMake"
     ["cmake_doc_file"]="ssm_doc_download_cmake.json"
     
     ["git_name"]="Git for Windows"
     ["git_key"]="Git/Windows x86_64/Version 2.51.0/Git-2.51.0-64-bit.exe"
     ["git_destination"]="C:/downloads/git"
-    ["git_doc_name"]="InstallGit"
+    ["git_doc_name"]="DownloadGit"
     ["git_doc_file"]="ssm_doc_download_git.json"
     
     ["nasm_name"]="NASM"
     ["nasm_key"]="NASM/Windows x86_64/Version 2.16.03/nasm-2.16.03-installer-x64.exe"
     ["nasm_destination"]="C:/downloads/nasm"
-    ["nasm_doc_name"]="InstallNASM"
+    ["nasm_doc_name"]="DownloadNASM"
     ["nasm_doc_file"]="ssm_doc_download_nasm.json"
     
     ["python_manager_name"]="Python Manager"
     ["python_manager_key"]="Python Manager/Windows x86_64/Version 25.0b14/python-manager-25.0b14.msi"
     ["python_manager_destination"]="C:/downloads/python"
-    ["python_manager_doc_name"]="InstallPythonManager"
+    ["python_manager_doc_name"]="DownloadPythonManager"
     ["python_manager_doc_file"]="ssm_doc_download_python_manager.json"
     
     ["strawberry_perl_name"]="Strawberry Perl"
     ["strawberry_perl_key"]="Strawberry Perl/Windows x86_64/Version 5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
     ["strawberry_perl_destination"]="C:/downloads/perl"
-    ["strawberry_perl_doc_name"]="InstallStrawberryPerl"
+    ["strawberry_perl_doc_name"]="DownloadStrawberryPerl"
     ["strawberry_perl_doc_file"]="ssm_doc_download_strawberry_perl.json"
 )
+
+# Function to ensure logs directory exists
+ensure_logs_directory() {
+    if [[ ! -d "$LOGS_DIR" ]]; then
+        mkdir -p "$LOGS_DIR"
+        if [[ $? -eq 0 ]]; then
+            echo "Created logs directory: $LOGS_DIR"
+        else
+            echo "Warning: Failed to create logs directory: $LOGS_DIR"
+            # Fallback to script directory
+            LOGS_DIR="$SCRIPT_DIR"
+            LOG_FILE="$LOGS_DIR/installer_deployment_$(date +%Y%m%d_%H%M%S).log"
+        fi
+    fi
+}
 
 # Function to log messages
 log_message() {
@@ -375,194 +392,6 @@ validate_s3_objects() {
     return 0
 }
 
-# Function to create SSM document JSON
-create_ssm_document_json() {
-    cat <<'SSMDOC'
-{
-    "schemaVersion": "2.2",
-    "description": "Debug: Download multiple installers from S3 access point",
-    "parameters": {
-        "s3BucketArn": {
-            "type": "String",
-            "description": "S3 access point ARN",
-            "allowedPattern": "^arn:aws:s3:[a-z0-9-]+:[0-9]+:accesspoint/[a-zA-Z0-9-]+$"
-        },
-        "softwareKeys": {
-            "type": "StringList",
-            "description": "List of S3 object keys for software installers"
-        },
-        "softwareNames": {
-            "type": "StringList",
-            "description": "List of software names (corresponding to keys)"
-        },
-        "downloadPaths": {
-            "type": "StringList",
-            "description": "List of destination paths for downloads"
-        },
-        "region": {
-            "type": "String",
-            "description": "AWS region",
-            "default": "us-east-1"
-        }
-    },
-    "mainSteps": [
-        {
-            "action": "aws:runPowerShellScript",
-            "name": "downloadInstallers",
-            "inputs": {
-                "timeoutSeconds": "1800",
-                "runCommand": [
-                    "# Debug: Multi-Installer Download Script",
-                    "",
-                    "# Get parameters from SSM",
-                    "$S3BucketArn = '{{ s3BucketArn }}'",
-                    "$SoftwareKeys = {{ softwareKeys }}",
-                    "$SoftwareNames = {{ softwareNames }}",
-                    "$DownloadPaths = {{ downloadPaths }}",
-                    "$Region = '{{ region }}'",
-                    "",
-                    "# Set up logging",
-                    "$LogDir = \"C:\\logs\"",
-                    "if (!(Test-Path $LogDir)) {",
-                    "    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null",
-                    "}",
-                    "",
-                    "$LogFile = \"$LogDir\\multi-download-debug-$(Get-Date -Format 'yyyyMMdd-HHmmss').log\"",
-                    "",
-                    "function Write-Log {",
-                    "    param([string]$Message, [string]$Level = \"INFO\")",
-                    "    $Timestamp = Get-Date -Format \"yyyy-MM-dd HH:mm:ss\"",
-                    "    $LogEntry = \"[$Timestamp] [$Level] $Message\"",
-                    "    Write-Host $LogEntry",
-                    "    Add-Content -Path $LogFile -Value $LogEntry",
-                    "}",
-                    "",
-                    "# Debug: Print all parameter values",
-                    "Write-Log \"========================================\" \"INFO\"",
-                    "Write-Log \"Multi-Installer Download Debug Session\" \"INFO\"",
-                    "Write-Log \"========================================\" \"INFO\"",
-                    "Write-Log \"S3BucketArn: $S3BucketArn\" \"INFO\"",
-                    "Write-Log \"SoftwareKeys count: $($SoftwareKeys.Count)\" \"INFO\"",
-                    "Write-Log \"SoftwareNames count: $($SoftwareNames.Count)\" \"INFO\"",
-                    "Write-Log \"DownloadPaths count: $($DownloadPaths.Count)\" \"INFO\"",
-                    "Write-Log \"Region: $Region\" \"INFO\"",
-                    "",
-                    "# Test AWS CLI availability",
-                    "Write-Log \"Testing AWS CLI...\" \"INFO\"",
-                    "try {",
-                    "    $awsVersion = & \"C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe\" --version 2>&1",
-                    "    Write-Log \"AWS CLI available: $awsVersion\" \"SUCCESS\"",
-                    "} catch {",
-                    "    Write-Log \"AWS CLI not available: $_\" \"ERROR\"",
-                    "    exit 1",
-                    "}",
-                    "",
-                    "# Test AWS credentials",
-                    "Write-Log \"Testing AWS credentials...\" \"INFO\"",
-                    "try {",
-                    "    $callerIdentity = & \"C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe\" sts get-caller-identity --region $Region 2>&1",
-                    "    if ($LASTEXITCODE -eq 0) {",
-                    "        Write-Log \"AWS credentials valid: $callerIdentity\" \"SUCCESS\"",
-                    "    } else {",
-                    "        Write-Log \"AWS credentials invalid: $callerIdentity\" \"ERROR\"",
-                    "        exit 1",
-                    "    }",
-                    "} catch {",
-                    "    Write-Log \"Failed to verify AWS credentials: $_\" \"ERROR\"",
-                    "    exit 1",
-                    "}",
-                    "",
-                    "# Initialize counters",
-                    "$SuccessCount = 0",
-                    "$FailureCount = 0",
-                    "",
-                    "# Download each file",
-                    "for ($i = 0; $i -lt $SoftwareKeys.Count; $i++) {",
-                    "    $Key = $SoftwareKeys[$i]",
-                    "    $Name = if ($i -lt $SoftwareNames.Count) { $SoftwareNames[$i] } else { \"Software $($i+1)\" }",
-                    "    $DestPath = if ($i -lt $DownloadPaths.Count) { $DownloadPaths[$i] } else { \"C:\\downloads\" }",
-                    "    ",
-                    "    Write-Log \"\" \"INFO\"",
-                    "    Write-Log \"Processing file $($i+1)/$($SoftwareKeys.Count): $Name\" \"INFO\"",
-                    "    Write-Log \"----------------------------------------\" \"INFO\"",
-                    "    ",
-                    "    # Create destination directory",
-                    "    Write-Log \"Creating destination directory: $DestPath\" \"INFO\"",
-                    "    if (!(Test-Path $DestPath)) {",
-                    "        New-Item -ItemType Directory -Path $DestPath -Force | Out-Null",
-                    "        Write-Log \"Directory created successfully\" \"SUCCESS\"",
-                    "    } else {",
-                    "        Write-Log \"Directory already exists\" \"INFO\"",
-                    "    }",
-                    "    ",
-                    "    # Extract filename from S3 key",
-                    "    $FileName = Split-Path $Key -Leaf",
-                    "    $FilePath = Join-Path $DestPath $FileName",
-                    "    ",
-                    "    Write-Log \"Downloading: $Name\" \"INFO\"",
-                    "    Write-Log \"  S3 Key: $Key\" \"INFO\"",
-                    "    Write-Log \"  Local Path: $FilePath\" \"INFO\"",
-                    "    ",
-                    "    # Download using AWS CLI",
-                    "    $awsExe = \"C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe\"",
-                    "    $awsArgs = @(\"s3api\", \"get-object\", \"--bucket\", $S3BucketArn, \"--key\", $Key, $FilePath, \"--region\", $Region)",
-                    "    $awsCommand = \"$awsExe s3api get-object --bucket $S3BucketArn --key $Key $FilePath --region $Region\"",
-                    "    Write-Log \"Executing: $awsCommand\" \"INFO\"",
-                    "    ",
-                    "    try {",
-                    "        $result = & $awsExe $awsArgs 2>&1",
-                    "        $exitCode = $LASTEXITCODE",
-                    "        ",
-                    "        Write-Log \"AWS CLI exit code: $exitCode\" \"INFO\"",
-                    "        Write-Log \"AWS CLI output: $result\" \"INFO\"",
-                    "        ",
-                    "        if ($exitCode -eq 0 -and (Test-Path $FilePath)) {",
-                    "            $FileInfo = Get-Item $FilePath",
-                    "            $FileSizeMB = [math]::Round($FileInfo.Length / 1MB, 2)",
-                    "            ",
-                    "            Write-Log \"✅ Download completed successfully!\" \"SUCCESS\"",
-                    "            Write-Log \"  File: $FilePath\" \"SUCCESS\"",
-                    "            Write-Log \"  Size: $FileSizeMB MB\" \"SUCCESS\"",
-                    "            Write-Log \"  Created: $($FileInfo.CreationTime)\" \"SUCCESS\"",
-                    "            ",
-                    "            $SuccessCount++",
-                    "        } else {",
-                    "            Write-Log \"❌ Download failed\" \"ERROR\"",
-                    "            Write-Log \"  Exit code: $exitCode\" \"ERROR\"",
-                    "            Write-Log \"  Output: $result\" \"ERROR\"",
-                    "            ",
-                    "            $FailureCount++",
-                    "        }",
-                    "    } catch {",
-                    "        Write-Log \"❌ Download error: $_\" \"ERROR\"",
-                    "        $FailureCount++",
-                    "    }",
-                    "}",
-                    "",
-                    "# Generate summary",
-                    "Write-Log \"\" \"INFO\"",
-                    "Write-Log \"========================================\" \"INFO\"",
-                    "Write-Log \"Download Summary\" \"INFO\"",
-                    "Write-Log \"========================================\" \"INFO\"",
-                    "Write-Log \"Total files: $($SoftwareKeys.Count)\" \"INFO\"",
-                    "Write-Log \"Successful downloads: $SuccessCount\" \"SUCCESS\"",
-                    "Write-Log \"Failed downloads: $FailureCount\" $(if ($FailureCount -gt 0) { \"ERROR\" } else { \"INFO\" })",
-                    "",
-                    "if ($FailureCount -eq 0) {",
-                    "    Write-Log \"All downloads completed successfully!\" \"SUCCESS\"",
-                    "    exit 0",
-                    "} else {",
-                    "    Write-Log \"Some downloads failed\" \"ERROR\"",
-                    "    exit 1",
-                    "}"
-                ]
-            }
-        }
-    ]
-}
-SSMDOC
-}
-
 # Function to verify SSM document
 verify_ssm_document() {
     local doc_name="$1"
@@ -690,12 +519,12 @@ register_ssm_document() {
     print_info "Registering debug SSM document: $SSM_DOC_DEBUG (always creates new version)"
     
     # Define path to SSM document JSON file
-    local doc_file="$SCRIPT_DIR/ssm_doc_download_cmake_debug.json"
+    local doc_file="$SSM_DOCS_DIR/ssm_doc_download_s3_installers.json"
     
     # Check if document file exists
     if [[ ! -f "$doc_file" ]]; then
         print_error "SSM document file not found: $doc_file"
-        print_info "Please ensure ssm_doc_download_cmake_debug.json exists in: $SCRIPT_DIR"
+        print_info "Please ensure ssm_doc_download_s3_installers.json exists in: $SSM_DOCS_DIR"
         return 1
     fi
     
@@ -1279,6 +1108,9 @@ main() {
         esac
     done
     
+    # Ensure logs directory exists before any logging
+    ensure_logs_directory
+    
     print_info "🚀 S3 Installers Download Script"
     print_info "Region: $AWS_REGION"
     print_info "S3 Access Point: $S3_ACCESS_POINT_ARN"
@@ -1297,11 +1129,11 @@ main() {
     # Check for required SSM document files based on mode
     if [[ "$action" == "register" ]] || [[ "$action" == "download" ]]; then
         if [[ "$EXECUTION_MODE" == "debug" ]]; then
-            local doc_file="$SCRIPT_DIR/ssm_doc_download_cmake_debug.json"
+            local doc_file="$SSM_DOCS_DIR/ssm_doc_download_s3_installers.json"
             if [[ ! -f "$doc_file" ]]; then
                 print_error "Required SSM document file not found: $doc_file"
-                print_info "Please ensure ssm_doc_download_cmake_debug.json exists in the same directory as this script"
-                print_info "Current directory: $SCRIPT_DIR"
+                print_info "Please ensure ssm_doc_download_s3_installers.json exists in the ssm/ directory"
+                print_info "SSM directory: $SSM_DOCS_DIR"
                 exit 1
             fi
         else
@@ -1569,6 +1401,7 @@ main() {
     fi
     
     print_info "Log file: $LOG_FILE"
+    print_info "Logs directory: $LOGS_DIR"
 }
 
 # Execute main function
