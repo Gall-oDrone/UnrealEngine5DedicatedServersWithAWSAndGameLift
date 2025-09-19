@@ -28,8 +28,16 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 # S3 Access Point configuration
 S3_ACCESS_POINT_ARN="${S3_ACCESS_POINT_ARN:-arn:aws:s3:us-east-1:326105557351:accesspoint/test-ap-2}"
 
-# SSM Document name for debugging
+# Execution mode configuration
+SEQUENTIAL_EXECUTION=true
+CONTINUE_ON_ERROR=false
+EXECUTION_MODE="debug"  # "debug" for single document, "individual" for separate documents
+
+# SSM Document name for debugging (single document approach)
 SSM_DOC_DEBUG="DebugCMakeDownload"
+
+# SSM Documents directory for individual documents
+SSM_DOCS_DIR="$SCRIPT_DIR/ssm"
 
 # Software configuration arrays
 declare -a SOFTWARE_KEYS=(
@@ -45,6 +53,49 @@ declare -a SOFTWARE_NAMES=(
 declare -a SOFTWARE_DESTINATIONS=(
     "C:/downloads/cmake"
     "C:/downloads/git"
+)
+
+# Individual installer configuration (for separate SSM documents approach)
+# Define installers in order of installation
+declare -a INSTALLER_ORDER=(
+    "cmake"
+    "git"
+    "nasm"
+    "python_manager"
+    "strawberry_perl"
+)
+
+# Installer configurations using associative arrays
+declare -A INSTALLER_CONFIGS=(
+    ["cmake_name"]="CMake"
+    ["cmake_key"]="CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
+    ["cmake_destination"]="C:/downloads/cmake"
+    ["cmake_doc_name"]="InstallCMake"
+    ["cmake_doc_file"]="ssm_doc_download_cmake.json"
+    
+    ["git_name"]="Git for Windows"
+    ["git_key"]="Git/Windows x86_64/Version 2.51.0/Git-2.51.0-64-bit.exe"
+    ["git_destination"]="C:/downloads/git"
+    ["git_doc_name"]="InstallGit"
+    ["git_doc_file"]="ssm_doc_download_git.json"
+    
+    ["nasm_name"]="NASM"
+    ["nasm_key"]="NASM/Windows x86_64/Version 2.16.03/nasm-2.16.03-installer-x64.exe"
+    ["nasm_destination"]="C:/downloads/nasm"
+    ["nasm_doc_name"]="InstallNASM"
+    ["nasm_doc_file"]="ssm_doc_download_nasm.json"
+    
+    ["python_manager_name"]="Python Manager"
+    ["python_manager_key"]="Python Manager/Windows x86_64/Version 25.0b14/python-manager-25.0b14.msi"
+    ["python_manager_destination"]="C:/downloads/python"
+    ["python_manager_doc_name"]="InstallPythonManager"
+    ["python_manager_doc_file"]="ssm_doc_download_python_manager.json"
+    
+    ["strawberry_perl_name"]="Strawberry Perl"
+    ["strawberry_perl_key"]="Strawberry Perl/Windows x86_64/Version 5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
+    ["strawberry_perl_destination"]="C:/downloads/perl"
+    ["strawberry_perl_doc_name"]="InstallStrawberryPerl"
+    ["strawberry_perl_doc_file"]="ssm_doc_download_strawberry_perl.json"
 )
 
 # Function to log messages
@@ -129,27 +180,42 @@ show_usage() {
     cat << EOF
 Usage: $0 [OPTIONS] <instance-id>
 
-Debug CMake Download Script
-Simplified script to debug CMake download from S3 access point.
+S3 Installers Download Script
+Supports both debug mode (single document) and individual installer mode.
 
 OPTIONS:
     -h, --help              Show this help message
     -r, --region            AWS region [default: us-east-1]
-    --register-document     Register debug SSM document (always creates new version)
+    --s3-arn                S3 Access Point ARN
+    --mode                  Execution mode: "debug" (single doc) or "individual" (separate docs) [default: debug]
+    --parallel              Run installations in parallel (individual mode only)
+    --continue-on-error     Continue with next installer if one fails
+    --register-document     Register SSM document(s) (always creates new version)
+    --register-only         Only register SSM documents, don't execute
     --list-documents        List existing SSM documents
+    --list-installers       List configured installers (individual mode)
     --verify-document       Verify SSM document is ready
-    --status                Check download status
+    --status                Check download/installation status
     --cleanup               Delete all registered SSM documents
 
 REQUIRED:
-    instance-id             EC2 instance ID to download CMake to
+    instance-id             EC2 instance ID to download/install software on
 
 EXAMPLES:
-    $0 i-0abc123def456789                     Download CMake
-    $0 --register-document                    Register SSM document
+    # Debug mode (single document approach)
+    $0 i-0abc123def456789                     Download CMake and Git using single document
+    $0 --register-document                    Register debug SSM document
     $0 --list-documents                       List SSM documents
+    
+    # Individual mode (separate documents approach)
+    $0 --mode individual i-0abc123def456789   Install all software using separate documents
+    $0 --mode individual --parallel i-0abc123def456789  Install in parallel
+    $0 --mode individual --register-only      Only register individual SSM documents
+    $0 --mode individual --list-installers    List all configured installers
+    
+    # Common operations
     $0 --verify-document                      Verify document is ready
-    $0 --status i-0abc123def456789            Check download status
+    $0 --status i-0abc123def456789            Check installation status
     $0 --cleanup                              Delete all SSM documents
 
 EOF
@@ -909,6 +975,228 @@ check_download_status() {
     fi
 }
 
+# Function to validate S3 object (for individual mode)
+validate_s3_object() {
+    local s3_key="$1"
+    local name="$2"
+    
+    print_progress "Validating S3 object: $name"
+    
+    # Check if object exists
+    if aws s3api head-object \
+        --bucket "$S3_ACCESS_POINT_ARN" \
+        --key "$s3_key" \
+        --region "$AWS_REGION" &>/dev/null; then
+        print_success "  ✅ $name - Object exists in S3"
+        return 0
+    else
+        print_error "  ❌ $name - Object not found in S3"
+        return 1
+    fi
+}
+
+# Function to register a single SSM document (for individual mode)
+register_ssm_document_individual() {
+    local doc_name="$1"
+    local doc_file="$2"
+    
+    print_info "Registering SSM document: $doc_name"
+    
+    local doc_path="$SSM_DOCS_DIR/$doc_file"
+    
+    if [[ ! -f "$doc_path" ]]; then
+        print_error "SSM document file not found: $doc_path"
+        return 1
+    fi
+    
+    # Check if document exists and delete it for fresh start
+    if aws ssm describe-document \
+        --name "$doc_name" \
+        --region "$AWS_REGION" &>/dev/null; then
+        print_info "Document exists, deleting for fresh registration..."
+        aws ssm delete-document \
+            --name "$doc_name" \
+            --region "$AWS_REGION" &>/dev/null || true
+        sleep 2
+    fi
+    
+    # Create new document
+    if aws ssm create-document \
+        --name "$doc_name" \
+        --document-type "Command" \
+        --content "file://$doc_path" \
+        --document-format "JSON" \
+        --region "$AWS_REGION" &>/dev/null; then
+        print_success "✅ Registered: $doc_name"
+        return 0
+    else
+        print_error "❌ Failed to register: $doc_name"
+        return 1
+    fi
+}
+
+# Function to execute SSM document for a single installer (individual mode)
+execute_installer() {
+    local instance_id="$1"
+    local installer="$2"
+    
+    local name="${INSTALLER_CONFIGS[${installer}_name]}"
+    local s3_key="${INSTALLER_CONFIGS[${installer}_key]}"
+    local destination="${INSTALLER_CONFIGS[${installer}_destination]}"
+    local doc_name="${INSTALLER_CONFIGS[${installer}_doc_name]}"
+    
+    print_info "📦 Installing $name..."
+    
+    # Execute SSM document
+    local command_id=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "$doc_name" \
+        --parameters "{
+            \"s3BucketArn\": [\"$S3_ACCESS_POINT_ARN\"],
+            \"softwareKey\": [\"$s3_key\"],
+            \"softwareName\": [\"$name\"],
+            \"downloadPath\": [\"$destination\"],
+            \"region\": [\"$AWS_REGION\"]
+        }" \
+        --timeout-seconds 1800 \
+        --region "$AWS_REGION" \
+        --output text \
+        --query 'Command.CommandId' 2>/dev/null)
+    
+    if [[ -z "$command_id" ]]; then
+        print_error "Failed to send command for $name"
+        return 1
+    fi
+    
+    print_info "Command ID for $name: $command_id"
+    
+    # Monitor execution
+    if monitor_command_individual "$instance_id" "$command_id" "$name"; then
+        print_success "✅ $name installed successfully"
+        return 0
+    else
+        print_error "❌ $name installation failed"
+        return 1
+    fi
+}
+
+# Function to monitor SSM command execution (individual mode)
+monitor_command_individual() {
+    local instance_id="$1"
+    local command_id="$2"
+    local installer_name="$3"
+    local max_wait=900  # 15 minutes per installer
+    
+    local elapsed=0
+    local interval=10
+    
+    print_progress "⏳ Monitoring $installer_name installation..."
+    
+    while [[ $elapsed -lt $max_wait ]]; do
+        # Get command status
+        local status=$(aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$instance_id" \
+            --region "$AWS_REGION" \
+            --query 'Status' \
+            --output text 2>/dev/null || echo "Unknown")
+        
+        case "$status" in
+            Success)
+                print_success "$installer_name installation completed"
+                return 0
+                ;;
+            Failed|TimedOut|Cancelled)
+                print_error "$installer_name installation failed with status: $status"
+                
+                # Get error details
+                local error_output=$(aws ssm get-command-invocation \
+                    --command-id "$command_id" \
+                    --instance-id "$instance_id" \
+                    --region "$AWS_REGION" \
+                    --query 'StandardErrorContent' \
+                    --output text 2>/dev/null || echo "No error details available")
+                
+                if [[ -n "$error_output" && "$error_output" != "No error details available" ]]; then
+                    print_error "Error details: $error_output"
+                fi
+                return 1
+                ;;
+            InProgress|Pending)
+                if [[ $((elapsed % 30)) -eq 0 && $elapsed -gt 0 ]]; then
+                    print_info "Still installing $installer_name... ($((elapsed/60)) minutes elapsed)"
+                fi
+                ;;
+        esac
+        
+        sleep $interval
+        elapsed=$((elapsed + interval))
+    done
+    
+    print_warning "Timeout waiting for $installer_name installation"
+    return 1
+}
+
+# Function to list configured installers (individual mode)
+list_installers() {
+    print_info "Configured Installers (in installation order):"
+    print_info "=============================================="
+    
+    local index=1
+    for installer in "${INSTALLER_ORDER[@]}"; do
+        local name="${INSTALLER_CONFIGS[${installer}_name]}"
+        local key="${INSTALLER_CONFIGS[${installer}_key]}"
+        local doc="${INSTALLER_CONFIGS[${installer}_doc_name]}"
+        
+        echo ""
+        echo "  [$index] $name"
+        echo "      S3 Key: $key"
+        echo "      SSM Document: $doc"
+        ((index++))
+    done
+    echo ""
+}
+
+# Function to check installation status (individual mode)
+check_installation_status() {
+    local instance_id="$1"
+    
+    print_info "Checking installation status on $instance_id..."
+    
+    for installer in "${INSTALLER_ORDER[@]}"; do
+        local name="${INSTALLER_CONFIGS[${installer}_name]}"
+        local destination="${INSTALLER_CONFIGS[${installer}_destination]}"
+        
+        print_progress "Checking $name..."
+        
+        # Check if installer file exists
+        local check_command=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "AWS-RunPowerShellScript" \
+            --parameters "commands=[\"if (Test-Path '$destination') { Get-ChildItem '$destination' | Select-Object Name, Length, CreationTime | ConvertTo-Json } else { Write-Host 'Not found' }\"]" \
+            --region "$AWS_REGION" \
+            --output text \
+            --query 'Command.CommandId' 2>/dev/null)
+        
+        if [[ -n "$check_command" ]]; then
+            sleep 5
+            
+            local result=$(aws ssm get-command-invocation \
+                --command-id "$check_command" \
+                --instance-id "$instance_id" \
+                --region "$AWS_REGION" \
+                --query 'StandardOutputContent' \
+                --output text 2>/dev/null || echo "Check failed")
+            
+            if [[ "$result" == *"Not found"* || "$result" == "Check failed" ]]; then
+                print_warning "  ⚠️  $name: Not installed"
+            else
+                print_success "  ✅ $name: Installed"
+            fi
+        fi
+    done
+}
+
 # Main execution function
 main() {
     local instance_id=""
@@ -925,12 +1213,40 @@ main() {
                 AWS_REGION="$2"
                 shift 2
                 ;;
+            --s3-arn)
+                S3_ACCESS_POINT_ARN="$2"
+                shift 2
+                ;;
+            --mode)
+                EXECUTION_MODE="$2"
+                if [[ "$EXECUTION_MODE" != "debug" && "$EXECUTION_MODE" != "individual" ]]; then
+                    print_error "Invalid mode: $EXECUTION_MODE. Must be 'debug' or 'individual'"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --parallel)
+                SEQUENTIAL_EXECUTION=false
+                shift
+                ;;
+            --continue-on-error)
+                CONTINUE_ON_ERROR=true
+                shift
+                ;;
             --register-document)
                 action="register"
                 shift
                 ;;
+            --register-only)
+                action="register_only"
+                shift
+                ;;
             --list-documents)
                 action="list"
+                shift
+                ;;
+            --list-installers)
+                action="list_installers"
                 shift
                 ;;
             --verify-document)
@@ -963,30 +1279,104 @@ main() {
         esac
     done
     
-    print_info "🚀 Debug Multi-Installer Download Script"
+    print_info "🚀 S3 Installers Download Script"
     print_info "Region: $AWS_REGION"
     print_info "S3 Access Point: $S3_ACCESS_POINT_ARN"
-    print_info "Software packages: ${#SOFTWARE_KEYS[@]}"
+    print_info "Execution Mode: $EXECUTION_MODE"
+    
+    if [[ "$EXECUTION_MODE" == "debug" ]]; then
+        print_info "Software packages: ${#SOFTWARE_KEYS[@]}"
+    else
+        print_info "Software packages: ${#INSTALLER_ORDER[@]}"
+    fi
     echo ""
     
     # Check prerequisites
     check_prerequisites
     
-    # Check for required SSM document file for register and download actions
+    # Check for required SSM document files based on mode
     if [[ "$action" == "register" ]] || [[ "$action" == "download" ]]; then
-        local doc_file="$SCRIPT_DIR/ssm_doc_download_cmake_debug.json"
-        if [[ ! -f "$doc_file" ]]; then
-            print_error "Required SSM document file not found: $doc_file"
-            print_info "Please ensure ssm_doc_download_cmake_debug.json exists in the same directory as this script"
-            print_info "Current directory: $SCRIPT_DIR"
-            exit 1
+        if [[ "$EXECUTION_MODE" == "debug" ]]; then
+            local doc_file="$SCRIPT_DIR/ssm_doc_download_cmake_debug.json"
+            if [[ ! -f "$doc_file" ]]; then
+                print_error "Required SSM document file not found: $doc_file"
+                print_info "Please ensure ssm_doc_download_cmake_debug.json exists in the same directory as this script"
+                print_info "Current directory: $SCRIPT_DIR"
+                exit 1
+            fi
+        else
+            # Check for individual SSM document files
+            if [[ ! -d "$SSM_DOCS_DIR" ]]; then
+                print_error "SSM documents directory not found: $SSM_DOCS_DIR"
+                print_info "Please ensure the ssm/ directory exists with individual SSM document files"
+                exit 1
+            fi
         fi
     fi
     
     # Handle different actions
     if [[ "$action" == "register" ]]; then
-        register_ssm_document
+        if [[ "$EXECUTION_MODE" == "debug" ]]; then
+            register_ssm_document
+        else
+            # Register all individual SSM documents
+            print_info "📋 Registering all individual SSM documents..."
+            local registration_failed=false
+            
+            for installer in "${INSTALLER_ORDER[@]}"; do
+                local doc_name="${INSTALLER_CONFIGS[${installer}_doc_name]}"
+                local doc_file="${INSTALLER_CONFIGS[${installer}_doc_file]}"
+                
+                if ! register_ssm_document_individual "$doc_name" "$doc_file"; then
+                    print_error "Failed to register $doc_name"
+                    registration_failed=true
+                    if [[ "$CONTINUE_ON_ERROR" != true ]]; then
+                        exit 1
+                    fi
+                fi
+            done
+            
+            if [[ "$registration_failed" == true && "$CONTINUE_ON_ERROR" != true ]]; then
+                print_error "Some SSM documents failed to register"
+                exit 1
+            fi
+            
+            print_success "✅ All SSM documents registered"
+        fi
         exit $?
+    fi
+    
+    if [[ "$action" == "register_only" ]]; then
+        if [[ "$EXECUTION_MODE" == "individual" ]]; then
+            # Register all individual SSM documents
+            print_info "📋 Registering all individual SSM documents..."
+            local registration_failed=false
+            
+            for installer in "${INSTALLER_ORDER[@]}"; do
+                local doc_name="${INSTALLER_CONFIGS[${installer}_doc_name]}"
+                local doc_file="${INSTALLER_CONFIGS[${installer}_doc_file]}"
+                
+                if ! register_ssm_document_individual "$doc_name" "$doc_file"; then
+                    print_error "Failed to register $doc_name"
+                    registration_failed=true
+                    if [[ "$CONTINUE_ON_ERROR" != true ]]; then
+                        exit 1
+                    fi
+                fi
+            done
+            
+            if [[ "$registration_failed" == true && "$CONTINUE_ON_ERROR" != true ]]; then
+                print_error "Some SSM documents failed to register"
+                exit 1
+            fi
+            
+            print_success "✅ All SSM documents registered"
+            print_info "Registration only mode - exiting"
+        else
+            print_error "register-only mode is only available in individual execution mode"
+            exit 1
+        fi
+        exit 0
     fi
     
     if [[ "$action" == "list" ]]; then
@@ -994,8 +1384,23 @@ main() {
         exit $?
     fi
     
+    if [[ "$action" == "list_installers" ]]; then
+        if [[ "$EXECUTION_MODE" == "individual" ]]; then
+            list_installers
+        else
+            print_error "list-installers is only available in individual execution mode"
+            exit 1
+        fi
+        exit $?
+    fi
+    
     if [[ "$action" == "verify" ]]; then
-        verify_ssm_document "$SSM_DOC_DEBUG"
+        if [[ "$EXECUTION_MODE" == "debug" ]]; then
+            verify_ssm_document "$SSM_DOC_DEBUG"
+        else
+            print_error "verify-document is only available in debug execution mode"
+            exit 1
+        fi
         exit $?
     fi
     
@@ -1018,43 +1423,151 @@ main() {
     fi
     
     if [[ "$action" == "status" ]]; then
-        check_download_status "$instance_id"
+        if [[ "$EXECUTION_MODE" == "debug" ]]; then
+            check_download_status "$instance_id"
+        else
+            check_installation_status "$instance_id"
+        fi
         exit 0
     fi
     
-    # For download action, verify document first
-    print_info "📋 Verifying SSM document..."
-    if ! verify_ssm_document "$SSM_DOC_DEBUG"; then
-        print_warning "SSM document not found or not active"
-        print_info "Attempting to register document..."
+    # Execute based on mode
+    if [[ "$EXECUTION_MODE" == "debug" ]]; then
+        # Debug mode - single document approach
+        print_info "📋 Verifying SSM document..."
+        if ! verify_ssm_document "$SSM_DOC_DEBUG"; then
+            print_warning "SSM document not found or not active"
+            print_info "Attempting to register document..."
+            
+            if ! register_ssm_document; then
+                print_error "Failed to register SSM document"
+                exit 1
+            fi
+        fi
         
-        if ! register_ssm_document; then
-            print_error "Failed to register SSM document"
+        # Validate S3 objects
+        print_info "📋 Validating S3 objects..."
+        if ! validate_s3_objects; then
+            print_error "S3 validation failed"
             exit 1
         fi
-    fi
-    
-    # Validate S3 objects
-    print_info "📋 Validating S3 objects..."
-    if ! validate_s3_objects; then
-        print_error "S3 validation failed"
-        exit 1
-    fi
-    
-    # Download installers
-    print_info "📥 Downloading installers..."
-    if download_installers "$instance_id"; then
-        print_success "✅ Downloads completed"
+        
+        # Download installers
+        print_info "📥 Downloading installers..."
+        if download_installers "$instance_id"; then
+            print_success "✅ Downloads completed"
+        else
+            print_error "❌ Downloads failed"
+            exit 1
+        fi
+        
+        # Final status check
+        print_info "📊 Final Status Check..."
+        check_download_status "$instance_id"
+        
+        print_success "✅ Debug Multi-Installer Download workflow complete!"
     else
-        print_error "❌ Downloads failed"
-        exit 1
+        # Individual mode - separate documents approach
+        print_info "📋 Step 1: Registering SSM documents..."
+        local registration_failed=false
+        
+        for installer in "${INSTALLER_ORDER[@]}"; do
+            local doc_name="${INSTALLER_CONFIGS[${installer}_doc_name]}"
+            local doc_file="${INSTALLER_CONFIGS[${installer}_doc_file]}"
+            
+            if ! register_ssm_document_individual "$doc_name" "$doc_file"; then
+                print_error "Failed to register $doc_name"
+                registration_failed=true
+                if [[ "$CONTINUE_ON_ERROR" != true ]]; then
+                    exit 1
+                fi
+            fi
+        done
+        
+        if [[ "$registration_failed" == true && "$CONTINUE_ON_ERROR" != true ]]; then
+            print_error "Some SSM documents failed to register"
+            exit 1
+        fi
+        
+        print_success "✅ SSM documents registered"
+        
+        # Step 2: Validate S3 objects
+        print_info "📋 Step 2: Validating S3 objects..."
+        local validation_failed=false
+        
+        for installer in "${INSTALLER_ORDER[@]}"; do
+            local name="${INSTALLER_CONFIGS[${installer}_name]}"
+            local s3_key="${INSTALLER_CONFIGS[${installer}_key]}"
+            
+            if ! validate_s3_object "$s3_key" "$name"; then
+                validation_failed=true
+                if [[ "$CONTINUE_ON_ERROR" != true ]]; then
+                    exit 1
+                fi
+            fi
+        done
+        
+        if [[ "$validation_failed" == true && "$CONTINUE_ON_ERROR" != true ]]; then
+            print_error "Some S3 objects are missing"
+            exit 1
+        fi
+        
+        # Step 3: Install software
+        print_info "📋 Step 3: Installing software..."
+        
+        if [[ "$SEQUENTIAL_EXECUTION" == true ]]; then
+            print_info "Running sequential installation (starting with CMake)..."
+            
+            local overall_success=true
+            for installer in "${INSTALLER_ORDER[@]}"; do
+                if ! execute_installer "$instance_id" "$installer"; then
+                    overall_success=false
+                    if [[ "$CONTINUE_ON_ERROR" != true ]]; then
+                        print_error "Installation failed, stopping sequence"
+                        exit 1
+                    fi
+                    print_warning "Continuing despite failure..."
+                fi
+            done
+            
+            if [[ "$overall_success" == true ]]; then
+                print_success "✅ All installations completed successfully!"
+            else
+                print_warning "⚠️  Some installations failed"
+            fi
+        else
+            print_info "Running parallel installation..."
+            print_warning "Note: Parallel installation is not recommended for dependent software"
+            
+            # Launch all installations in background
+            local pids=()
+            for installer in "${INSTALLER_ORDER[@]}"; do
+                execute_installer "$instance_id" "$installer" &
+                pids+=($!)
+            done
+            
+            # Wait for all to complete
+            local overall_success=true
+            for pid in "${pids[@]}"; do
+                if ! wait $pid; then
+                    overall_success=false
+                fi
+            done
+            
+            if [[ "$overall_success" == true ]]; then
+                print_success "✅ All installations completed successfully!"
+            else
+                print_warning "⚠️  Some installations failed"
+            fi
+        fi
+        
+        # Final status check
+        print_info "📊 Final Status Check..."
+        check_installation_status "$instance_id"
+        
+        print_success "✅ Individual Installer Deployment workflow complete!"
     fi
     
-    # Final status check
-    print_info "📊 Final Status Check..."
-    check_download_status "$instance_id"
-    
-    print_success "✅ Debug Multi-Installer Download workflow complete!"
     print_info "Log file: $LOG_FILE"
 }
 
