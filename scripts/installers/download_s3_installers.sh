@@ -1,8 +1,12 @@
 #!/bin/bash
 
-# S3 Installer Download Script
-# This script registers SSM documents and downloads software from S3 using access points
-# It validates S3 objects and downloads installers to the target instance
+# Debug CMake Download Script
+# Simplified script to debug CMake download from S3 access point
+#
+# REQUIREMENTS:
+#   - AWS CLI installed and configured
+#   - jq installed for JSON processing  
+#   - ssm_doc_download_cmake_debug.json file in the same directory as this script
 
 set -euo pipefail
 
@@ -16,32 +20,31 @@ NC='\033[0m' # No Color
 
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="$SCRIPT_DIR/s3_download_$(date +%Y%m%d_%H%M%S).log"
-STATE_FILE="$SCRIPT_DIR/download_state.json"
+LOG_FILE="$SCRIPT_DIR/cmake_debug_$(date +%Y%m%d_%H%M%S).log"
 
 # Default values
-DRY_RUN=false
-SKIP_VALIDATION=false
-AUTO_APPROVE=false
 AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # S3 Access Point configuration
 S3_ACCESS_POINT_ARN="${S3_ACCESS_POINT_ARN:-arn:aws:s3:us-east-1:326105557351:accesspoint/test-ap-2}"
 
-# SSM Document name for downloading
-SSM_DOC_DOWNLOAD="DownloadS3Installers"
+# SSM Document name for debugging
+SSM_DOC_DEBUG="DebugCMakeDownload"
 
-# Software configuration arrays - DEBUGGING: Only CMake for now
+# Software configuration arrays
 declare -a SOFTWARE_KEYS=(
     "CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
+    "Git/Windows x86_64/Version 2.51.0/Git-2.51.0-64-bit.exe"
 )
 
 declare -a SOFTWARE_NAMES=(
     "CMake"
+    "Git for Windows"
 )
 
 declare -a SOFTWARE_DESTINATIONS=(
-    "C:\\downloads\\cmake"
+    "C:/downloads/cmake"
+    "C:/downloads/git"
 )
 
 # Function to log messages
@@ -78,46 +81,74 @@ print_progress() {
     log_message "PROGRESS" "$1"
 }
 
+# Function to list SSM documents
+list_ssm_documents() {
+    print_info "Listing SSM documents matching: $SSM_DOC_DEBUG"
+    
+    # List all Command documents if specific one not found
+    local docs
+    docs=$(aws ssm list-documents \
+        --document-filter-list "key=DocumentType,value=Command" \
+        --region "$AWS_REGION" \
+        --output json 2>/tmp/ssm_list_error.txt)
+    
+    local exit_code=$?
+    
+    if [[ $exit_code -ne 0 ]]; then
+        local error_output=$(cat /tmp/ssm_list_error.txt 2>/dev/null || echo "Unknown error")
+        print_error "Failed to list documents: $error_output"
+        rm -f /tmp/ssm_list_error.txt
+        return 1
+    fi
+    
+    rm -f /tmp/ssm_list_error.txt
+    
+    # Validate JSON before parsing
+    if ! echo "$docs" | jq empty 2>/dev/null; then
+        print_error "Invalid JSON response from AWS CLI"
+        return 1
+    fi
+    
+    # Check for our specific document
+    local our_doc=$(echo "$docs" | jq --arg name "$SSM_DOC_DEBUG" '.DocumentIdentifiers[] | select(.Name == $name)' 2>/dev/null)
+    
+    if [[ -n "$our_doc" ]]; then
+        print_success "Found document: $SSM_DOC_DEBUG"
+        echo "$our_doc" | jq -r '"  - Name: \(.Name)\n  - Version: \(.DocumentVersion)\n  - Owner: \(.Owner)\n  - Platform: \(.PlatformTypes // ["N/A"] | join(", "))"'
+    else
+        print_warning "Document not found: $SSM_DOC_DEBUG"
+        
+        # Show recent Command documents for reference
+        print_info "Recent Command documents in account:"
+        echo "$docs" | jq -r '.DocumentIdentifiers[:5][] | "  - \(.Name) (Owner: \(.Owner))"' 2>/dev/null || echo "  No documents found"
+    fi
+}
+
 # Function to show usage
 show_usage() {
     cat << EOF
 Usage: $0 [OPTIONS] <instance-id>
 
-S3 Installer Download Script
-Registers SSM documents and downloads software from S3 using access points.
+Debug CMake Download Script
+Simplified script to debug CMake download from S3 access point.
 
 OPTIONS:
     -h, --help              Show this help message
-    -d, --dry-run           Perform validation only, don't execute
-    --skip-validation       Skip S3 object validation
-    -a, --auto-approve      Auto-approve all operations
     -r, --region            AWS region [default: us-east-1]
-    -l, --list              List configured software
-    -s, --status            Check download status
-    -c, --cleanup           Clean up temporary files and SSM documents
-    --register-documents    Register SSM documents in AWS
+    --register-document     Register debug SSM document
+    --list-documents        List existing SSM documents
+    --verify-document       Verify SSM document is ready
+    --status                Check download status
 
 REQUIRED:
-    instance-id             EC2 instance ID to download software to
+    instance-id             EC2 instance ID to download CMake to
 
 EXAMPLES:
-    $0 i-0abc123def456789                     Full download workflow
-    $0 -d i-0abc123def456789                   Dry run (validation only)
-    $0 --skip-validation i-0abc123def456789    Skip S3 validation
-    $0 -l                                       List configured software
-    $0 -s i-0abc123def456789                   Check download status
-    $0 --register-documents                    Register SSM documents
-
-WORKFLOW:
-    1. Validates S3 objects exist and are accessible
-    2. Downloads all installers to the target instance
-    3. Reports download status
-
-PREREQUISITES:
-    - AWS CLI configured with appropriate permissions
-    - SSM Agent running on target instance
-    - SSM documents registered (use --register-documents)
-    - S3 access for the instance IAM role
+    $0 i-0abc123def456789                     Download CMake
+    $0 --register-document                    Register SSM document
+    $0 --list-documents                       List SSM documents
+    $0 --verify-document                      Verify document is ready
+    $0 --status i-0abc123def456789            Check download status
 
 EOF
 }
@@ -268,112 +299,358 @@ validate_s3_objects() {
     
     print_info "Validation Summary: $validated_count valid, $failed_count failed"
     
-    if [[ "$validation_failed" == true ]] && [[ "$SKIP_VALIDATION" != true ]]; then
-        print_error "S3 validation failed. Use --skip-validation to bypass."
+    if [[ "$validation_failed" == true ]]; then
+        print_error "S3 validation failed"
         return 1
     fi
     
     return 0
 }
 
+# Function to create SSM document JSON
+create_ssm_document_json() {
+    cat <<'SSMDOC'
+{
+    "schemaVersion": "2.2",
+    "description": "Debug: Download multiple installers from S3 access point",
+    "parameters": {
+        "s3BucketArn": {
+            "type": "String",
+            "description": "S3 access point ARN",
+            "allowedPattern": "^arn:aws:s3:[a-z0-9-]+:[0-9]+:accesspoint/[a-zA-Z0-9-]+$"
+        },
+        "softwareKeys": {
+            "type": "StringList",
+            "description": "List of S3 object keys for software installers"
+        },
+        "softwareNames": {
+            "type": "StringList",
+            "description": "List of software names (corresponding to keys)"
+        },
+        "downloadPaths": {
+            "type": "StringList",
+            "description": "List of destination paths for downloads"
+        },
+        "region": {
+            "type": "String",
+            "description": "AWS region",
+            "default": "us-east-1"
+        }
+    },
+    "mainSteps": [
+        {
+            "action": "aws:runPowerShellScript",
+            "name": "downloadInstallers",
+            "inputs": {
+                "timeoutSeconds": "1800",
+                "runCommand": [
+                    "# Debug: Multi-Installer Download Script",
+                    "",
+                    "# Get parameters from SSM",
+                    "$S3BucketArn = '{{ s3BucketArn }}'",
+                    "$SoftwareKeys = {{ softwareKeys }}",
+                    "$SoftwareNames = {{ softwareNames }}",
+                    "$DownloadPaths = {{ downloadPaths }}",
+                    "$Region = '{{ region }}'",
+                    "",
+                    "# Set up logging",
+                    "$LogDir = \"C:\\logs\"",
+                    "if (!(Test-Path $LogDir)) {",
+                    "    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null",
+                    "}",
+                    "",
+                    "$LogFile = \"$LogDir\\multi-download-debug-$(Get-Date -Format 'yyyyMMdd-HHmmss').log\"",
+                    "",
+                    "function Write-Log {",
+                    "    param([string]$Message, [string]$Level = \"INFO\")",
+                    "    $Timestamp = Get-Date -Format \"yyyy-MM-dd HH:mm:ss\"",
+                    "    $LogEntry = \"[$Timestamp] [$Level] $Message\"",
+                    "    Write-Host $LogEntry",
+                    "    Add-Content -Path $LogFile -Value $LogEntry",
+                    "}",
+                    "",
+                    "# Debug: Print all parameter values",
+                    "Write-Log \"========================================\" \"INFO\"",
+                    "Write-Log \"Multi-Installer Download Debug Session\" \"INFO\"",
+                    "Write-Log \"========================================\" \"INFO\"",
+                    "Write-Log \"S3BucketArn: $S3BucketArn\" \"INFO\"",
+                    "Write-Log \"SoftwareKeys count: $($SoftwareKeys.Count)\" \"INFO\"",
+                    "Write-Log \"SoftwareNames count: $($SoftwareNames.Count)\" \"INFO\"",
+                    "Write-Log \"DownloadPaths count: $($DownloadPaths.Count)\" \"INFO\"",
+                    "Write-Log \"Region: $Region\" \"INFO\"",
+                    "",
+                    "# Test AWS CLI availability",
+                    "Write-Log \"Testing AWS CLI...\" \"INFO\"",
+                    "try {",
+                    "    $awsVersion = & \"C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe\" --version 2>&1",
+                    "    Write-Log \"AWS CLI available: $awsVersion\" \"SUCCESS\"",
+                    "} catch {",
+                    "    Write-Log \"AWS CLI not available: $_\" \"ERROR\"",
+                    "    exit 1",
+                    "}",
+                    "",
+                    "# Test AWS credentials",
+                    "Write-Log \"Testing AWS credentials...\" \"INFO\"",
+                    "try {",
+                    "    $callerIdentity = & \"C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe\" sts get-caller-identity --region $Region 2>&1",
+                    "    if ($LASTEXITCODE -eq 0) {",
+                    "        Write-Log \"AWS credentials valid: $callerIdentity\" \"SUCCESS\"",
+                    "    } else {",
+                    "        Write-Log \"AWS credentials invalid: $callerIdentity\" \"ERROR\"",
+                    "        exit 1",
+                    "    }",
+                    "} catch {",
+                    "    Write-Log \"Failed to verify AWS credentials: $_\" \"ERROR\"",
+                    "    exit 1",
+                    "}",
+                    "",
+                    "# Initialize counters",
+                    "$SuccessCount = 0",
+                    "$FailureCount = 0",
+                    "",
+                    "# Download each file",
+                    "for ($i = 0; $i -lt $SoftwareKeys.Count; $i++) {",
+                    "    $Key = $SoftwareKeys[$i]",
+                    "    $Name = if ($i -lt $SoftwareNames.Count) { $SoftwareNames[$i] } else { \"Software $($i+1)\" }",
+                    "    $DestPath = if ($i -lt $DownloadPaths.Count) { $DownloadPaths[$i] } else { \"C:\\downloads\" }",
+                    "    ",
+                    "    Write-Log \"\" \"INFO\"",
+                    "    Write-Log \"Processing file $($i+1)/$($SoftwareKeys.Count): $Name\" \"INFO\"",
+                    "    Write-Log \"----------------------------------------\" \"INFO\"",
+                    "    ",
+                    "    # Create destination directory",
+                    "    Write-Log \"Creating destination directory: $DestPath\" \"INFO\"",
+                    "    if (!(Test-Path $DestPath)) {",
+                    "        New-Item -ItemType Directory -Path $DestPath -Force | Out-Null",
+                    "        Write-Log \"Directory created successfully\" \"SUCCESS\"",
+                    "    } else {",
+                    "        Write-Log \"Directory already exists\" \"INFO\"",
+                    "    }",
+                    "    ",
+                    "    # Extract filename from S3 key",
+                    "    $FileName = Split-Path $Key -Leaf",
+                    "    $FilePath = Join-Path $DestPath $FileName",
+                    "    ",
+                    "    Write-Log \"Downloading: $Name\" \"INFO\"",
+                    "    Write-Log \"  S3 Key: $Key\" \"INFO\"",
+                    "    Write-Log \"  Local Path: $FilePath\" \"INFO\"",
+                    "    ",
+                    "    # Download using AWS CLI",
+                    "    $awsExe = \"C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe\"",
+                    "    $awsArgs = @(\"s3api\", \"get-object\", \"--bucket\", $S3BucketArn, \"--key\", $Key, $FilePath, \"--region\", $Region)",
+                    "    $awsCommand = \"$awsExe s3api get-object --bucket $S3BucketArn --key $Key $FilePath --region $Region\"",
+                    "    Write-Log \"Executing: $awsCommand\" \"INFO\"",
+                    "    ",
+                    "    try {",
+                    "        $result = & $awsExe $awsArgs 2>&1",
+                    "        $exitCode = $LASTEXITCODE",
+                    "        ",
+                    "        Write-Log \"AWS CLI exit code: $exitCode\" \"INFO\"",
+                    "        Write-Log \"AWS CLI output: $result\" \"INFO\"",
+                    "        ",
+                    "        if ($exitCode -eq 0 -and (Test-Path $FilePath)) {",
+                    "            $FileInfo = Get-Item $FilePath",
+                    "            $FileSizeMB = [math]::Round($FileInfo.Length / 1MB, 2)",
+                    "            ",
+                    "            Write-Log \"✅ Download completed successfully!\" \"SUCCESS\"",
+                    "            Write-Log \"  File: $FilePath\" \"SUCCESS\"",
+                    "            Write-Log \"  Size: $FileSizeMB MB\" \"SUCCESS\"",
+                    "            Write-Log \"  Created: $($FileInfo.CreationTime)\" \"SUCCESS\"",
+                    "            ",
+                    "            $SuccessCount++",
+                    "        } else {",
+                    "            Write-Log \"❌ Download failed\" \"ERROR\"",
+                    "            Write-Log \"  Exit code: $exitCode\" \"ERROR\"",
+                    "            Write-Log \"  Output: $result\" \"ERROR\"",
+                    "            ",
+                    "            $FailureCount++",
+                    "        }",
+                    "    } catch {",
+                    "        Write-Log \"❌ Download error: $_\" \"ERROR\"",
+                    "        $FailureCount++",
+                    "    }",
+                    "}",
+                    "",
+                    "# Generate summary",
+                    "Write-Log \"\" \"INFO\"",
+                    "Write-Log \"========================================\" \"INFO\"",
+                    "Write-Log \"Download Summary\" \"INFO\"",
+                    "Write-Log \"========================================\" \"INFO\"",
+                    "Write-Log \"Total files: $($SoftwareKeys.Count)\" \"INFO\"",
+                    "Write-Log \"Successful downloads: $SuccessCount\" \"SUCCESS\"",
+                    "Write-Log \"Failed downloads: $FailureCount\" $(if ($FailureCount -gt 0) { \"ERROR\" } else { \"INFO\" })",
+                    "",
+                    "if ($FailureCount -eq 0) {",
+                    "    Write-Log \"All downloads completed successfully!\" \"SUCCESS\"",
+                    "    exit 0",
+                    "} else {",
+                    "    Write-Log \"Some downloads failed\" \"ERROR\"",
+                    "    exit 1",
+                    "}"
+                ]
+            }
+        }
+    ]
+}
+SSMDOC
+}
+
+# Function to verify SSM document
+verify_ssm_document() {
+    local doc_name="$1"
+    
+    print_info "Verifying SSM document: $doc_name"
+    
+    # Check if document exists - capture both stdout and stderr separately
+    local doc_info
+    local error_output
+    
+    doc_info=$(aws ssm describe-document \
+        --name "$doc_name" \
+        --region "$AWS_REGION" \
+        --output json 2>/tmp/ssm_verify_error.txt)
+    
+    local exit_code=$?
+    
+    if [[ $exit_code -ne 0 ]]; then
+        error_output=$(cat /tmp/ssm_verify_error.txt 2>/dev/null || echo "Unknown error")
+        print_error "Document does not exist or is not accessible"
+        print_error "Error: $error_output"
+        rm -f /tmp/ssm_verify_error.txt
+        return 1
+    fi
+    
+    rm -f /tmp/ssm_verify_error.txt
+    
+    # Validate JSON before parsing
+    if ! echo "$doc_info" | jq empty 2>/dev/null; then
+        print_error "Invalid JSON response from AWS CLI"
+        print_error "Response: $doc_info"
+        return 1
+    fi
+    
+    # Parse document info
+    local doc_status=$(echo "$doc_info" | jq -r '.Document.Status // "Unknown"' 2>/dev/null || echo "Unknown")
+    local doc_type=$(echo "$doc_info" | jq -r '.Document.DocumentType // "Unknown"' 2>/dev/null || echo "Unknown")
+    local doc_version=$(echo "$doc_info" | jq -r '.Document.DocumentVersion // "Unknown"' 2>/dev/null || echo "Unknown")
+    
+    print_info "Document Status: $doc_status"
+    print_info "Document Type: $doc_type"
+    print_info "Document Version: $doc_version"
+    
+    if [[ "$doc_status" != "Active" ]]; then
+        print_error "Document is not active (status: $doc_status)"
+        return 1
+    fi
+    
+    print_success "Document verified successfully"
+    return 0
+}
+
 # Function to register SSM document
 register_ssm_document() {
-    print_info "Registering SSM document: $SSM_DOC_DOWNLOAD"
+    print_info "Registering debug SSM document: $SSM_DOC_DEBUG"
     
-    # GitHub raw URL for the SSM document
-    local ssm_doc_url="https://raw.githubusercontent.com/your-username/your-repo/main/scripts/installers/ssm_doc_download_s3_installers.json"
+    # Define path to SSM document JSON file
+    local doc_file="$SCRIPT_DIR/ssm_doc_download_cmake_debug.json"
     
-    # Download the document content
-    print_progress "Downloading SSM document from GitHub..."
-    local doc_content=$(curl -s "$ssm_doc_url")
-    
-    if [[ -z "$doc_content" ]] || [[ "$doc_content" == *"404"* ]]; then
-        print_error "Failed to download SSM document from: $ssm_doc_url"
-        print_info "Please check the URL and ensure the file exists in your repository"
+    # Check if document file exists
+    if [[ ! -f "$doc_file" ]]; then
+        print_error "SSM document file not found: $doc_file"
+        print_info "Please ensure ssm_doc_download_cmake_debug.json exists in: $SCRIPT_DIR"
         return 1
     fi
     
-    # Validate JSON content
-    if ! echo "$doc_content" | jq . >/dev/null 2>&1; then
-        print_error "Downloaded content is not valid JSON"
+    print_success "Found SSM document file: $doc_file"
+    
+    # Validate JSON structure
+    if ! jq empty "$doc_file" 2>/dev/null; then
+        print_error "SSM document file has invalid JSON"
+        print_info "You can validate it with: jq . $doc_file"
         return 1
     fi
     
-    print_success "SSM document downloaded successfully"
+    print_success "JSON validation passed"
     
     # Check if document already exists
-    if aws ssm describe-document \
-        --name "$SSM_DOC_DOWNLOAD" \
-        --region "$AWS_REGION" &>/dev/null; then
-        print_warning "Document already exists, attempting to update..."
+    print_progress "Checking for existing document..."
+    local existing_doc
+    existing_doc=$(aws ssm describe-document \
+        --name "$SSM_DOC_DEBUG" \
+        --region "$AWS_REGION" \
+        --output json 2>/dev/null)
+    
+    if [[ $? -eq 0 ]]; then
+        print_warning "Document already exists, deleting old version..."
         
-        # Try to update existing document
-        local update_result=$(echo "$doc_content" | aws ssm update-document \
-            --name "$SSM_DOC_DOWNLOAD" \
-            --content file:///dev/stdin \
-            --document-version "\$LATEST" \
-            --region "$AWS_REGION" 2>&1)
-        
-        if [[ $? -eq 0 ]]; then
-            print_success "✅ Updated: $SSM_DOC_DOWNLOAD"
+        # Delete existing document
+        if aws ssm delete-document \
+            --name "$SSM_DOC_DEBUG" \
+            --region "$AWS_REGION" 2>/tmp/ssm_delete_error.txt; then
+            print_success "Old document deleted"
+            sleep 3  # Wait for deletion to propagate
         else
-            print_error "❌ Failed to update: $SSM_DOC_DOWNLOAD"
-            print_error "Update error: $update_result"
-            
-            # Try alternative approach: delete and recreate
-            print_warning "Attempting to delete and recreate document..."
-            
-            # Delete existing document
-            local delete_result=$(aws ssm delete-document \
-                --name "$SSM_DOC_DOWNLOAD" \
-                --region "$AWS_REGION" 2>&1)
-            
-            if [[ $? -eq 0 ]]; then
-                print_info "Document deleted successfully"
-                
-                # Wait a moment for deletion to propagate
-                sleep 2
-                
-                # Create new document
-                local create_result=$(echo "$doc_content" | aws ssm create-document \
-                    --name "$SSM_DOC_DOWNLOAD" \
-                    --document-type "Command" \
-                    --content file:///dev/stdin \
-                    --document-format "JSON" \
-                    --region "$AWS_REGION" 2>&1)
-                
-                if [[ $? -eq 0 ]]; then
-                    print_success "✅ Recreated: $SSM_DOC_DOWNLOAD"
-                else
-                    print_error "❌ Failed to recreate: $SSM_DOC_DOWNLOAD"
-                    print_error "Create error: $create_result"
-                    return 1
-                fi
-            else
-                print_error "❌ Failed to delete document: $delete_result"
-                return 1
-            fi
+            local delete_error=$(cat /tmp/ssm_delete_error.txt 2>/dev/null)
+            print_warning "Could not delete old document: $delete_error"
+            rm -f /tmp/ssm_delete_error.txt
         fi
     else
-        # Create new document
-        print_progress "Creating new document..."
-        local create_result=$(echo "$doc_content" | aws ssm create-document \
-            --name "$SSM_DOC_DOWNLOAD" \
-            --document-type "Command" \
-            --content file:///dev/stdin \
-            --document-format "JSON" \
-            --region "$AWS_REGION" 2>&1)
-        
-        if [[ $? -eq 0 ]]; then
-            print_success "✅ Created: $SSM_DOC_DOWNLOAD"
-        else
-            print_error "❌ Failed to create: $SSM_DOC_DOWNLOAD"
-            print_error "Create error: $create_result"
-            return 1
-        fi
+        print_info "No existing document found"
     fi
     
-    print_success "SSM document registration complete"
+    # Create new document
+    print_progress "Creating new SSM document..."
+    local create_output
+    create_output=$(aws ssm create-document \
+        --name "$SSM_DOC_DEBUG" \
+        --document-type "Command" \
+        --content "file://$doc_file" \
+        --document-format "JSON" \
+        --region "$AWS_REGION" \
+        --output json 2>/tmp/ssm_create_error.txt)
+    
+    local create_exit_code=$?
+    
+    if [[ $create_exit_code -eq 0 ]]; then
+        # Validate JSON response before parsing
+        if echo "$create_output" | jq empty 2>/dev/null; then
+            local doc_status=$(echo "$create_output" | jq -r '.DocumentDescription.Status // "Unknown"')
+            local doc_version=$(echo "$create_output" | jq -r '.DocumentDescription.DocumentVersion // "Unknown"')
+            
+            print_success "✅ Created: $SSM_DOC_DEBUG"
+            print_info "Created with status: $doc_status, version: $doc_version"
+        else
+            print_success "✅ Document created (could not parse response)"
+        fi
+        
+        # Wait for document to become active
+        print_progress "Waiting for document to become active..."
+        sleep 5
+        
+        # Verify document
+        if verify_ssm_document "$SSM_DOC_DEBUG"; then
+            print_success "Document is ready to use"
+        else
+            print_warning "Document created but verification failed - it may need more time to propagate"
+        fi
+        
+        rm -f /tmp/ssm_create_error.txt
+        return 0
+    else
+        local create_error=$(cat /tmp/ssm_create_error.txt 2>/dev/null || echo "Unknown error")
+        print_error "❌ Failed to create: $SSM_DOC_DEBUG"
+        print_error "Error: $create_error"
+        
+        # Check if it's a validation error
+        if echo "$create_error" | grep -q "ValidationException"; then
+            print_error "Document has validation errors. Please check the JSON structure."
+            print_info "Document file: $doc_file"
+            print_info "You can validate it with: jq . $doc_file"
+        fi
+        
+        rm -f /tmp/ssm_create_error.txt
+        return 1
+    fi
 }
 
 # Function to download installers
@@ -382,8 +659,13 @@ download_installers() {
     
     print_info "📦 Downloading installers from S3..."
     
+    # First verify the document exists and is active
+    if ! verify_ssm_document "$SSM_DOC_DEBUG"; then
+        print_error "SSM document not ready. Please run with --register-document first"
+        return 1
+    fi
+    
     # Prepare parameters for SSM document
-    # Build parameter JSON for StringList parameters
     local keys_json=$(printf '%s\n' "${SOFTWARE_KEYS[@]}" | jq -R . | jq -s -c .)
     local names_json=$(printf '%s\n' "${SOFTWARE_NAMES[@]}" | jq -R . | jq -s -c .)
     local destinations_json=$(printf '%s\n' "${SOFTWARE_DESTINATIONS[@]}" | jq -R . | jq -s -c .)
@@ -399,9 +681,9 @@ download_installers() {
     # Execute download SSM document
     print_progress "Executing download command..."
     
-    local command_id=$(aws ssm send-command \
+    local send_output=$(aws ssm send-command \
         --instance-ids "$instance_id" \
-        --document-name "$SSM_DOC_DOWNLOAD" \
+        --document-name "$SSM_DOC_DEBUG" \
         --parameters "{
             \"s3BucketArn\": [\"$S3_ACCESS_POINT_ARN\"],
             \"softwareKeys\": $keys_json,
@@ -411,11 +693,30 @@ download_installers() {
         }" \
         --timeout-seconds 1800 \
         --region "$AWS_REGION" \
-        --output text \
-        --query 'Command.CommandId')
+        --output json 2>&1)
+    
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to send download command"
+        print_error "Error output: $send_output"
+        
+        # Check for specific error types
+        if echo "$send_output" | grep -q "InvalidDocument"; then
+            print_error "The SSM document is invalid or not found"
+            print_info "Try running: $0 --register-document"
+        elif echo "$send_output" | grep -q "AccessDenied"; then
+            print_error "Access denied. Check IAM permissions for SSM"
+        elif echo "$send_output" | grep -q "InvalidInstanceId"; then
+            print_error "Invalid instance ID: $instance_id"
+        fi
+        
+        return 1
+    fi
+    
+    local command_id=$(echo "$send_output" | jq -r '.Command.CommandId // ""')
     
     if [[ -z "$command_id" ]]; then
-        print_error "Failed to send download command"
+        print_error "Failed to get command ID from response"
+        print_error "Response: $send_output"
         return 1
     fi
     
@@ -515,9 +816,6 @@ check_download_status() {
             "$downloads = @()",
             "if (Test-Path \"C:\\downloads\\cmake\\cmake-4.1.1-windows-x86_64.msi\") { $downloads += \"CMake\" }",
             "if (Test-Path \"C:\\downloads\\git\\Git-2.51.0-64-bit.exe\") { $downloads += \"Git\" }",
-            "if (Test-Path \"C:\\downloads\\nasm\\nasm-2.16.03-installer-x64.exe\") { $downloads += \"NASM\" }",
-            "if (Test-Path \"C:\\downloads\\python\\python-manager-25.0b14.msi\") { $downloads += \"Python\" }",
-            "if (Test-Path \"C:\\downloads\\perl\\strawberry-perl-5.40.2.1-64bit.msi\") { $downloads += \"Perl\" }",
             "if ($downloads.Count -eq 0) { \"No files downloaded\" } else { \"Downloaded: \" + ($downloads -join \", \") }"
         ]' \
         --region "$AWS_REGION" \
@@ -539,71 +837,6 @@ check_download_status() {
     fi
 }
 
-# Function to list configured software
-list_configured_software() {
-    print_info "Configured Software for Download:"
-    print_info "================================="
-    
-    for i in "${!SOFTWARE_KEYS[@]}"; do
-        local key="${SOFTWARE_KEYS[$i]}"
-        local name="${SOFTWARE_NAMES[$i]}"
-        local destination="${SOFTWARE_DESTINATIONS[$i]}"
-        
-        echo ""
-        echo "[$((i+1))] $name"
-        echo "    S3 Key: $key"
-        echo "    Download Path: $destination"
-    done
-    echo ""
-}
-
-# Function to clean up resources
-cleanup_resources() {
-    print_info "Cleaning up resources..."
-    
-    # Remove state file
-    if [[ -f "$STATE_FILE" ]]; then
-        rm -f "$STATE_FILE"
-        print_info "Removed state file"
-    fi
-    
-    # Clean up old log files (keep last 10)
-    local log_count=$(ls -1 "$SCRIPT_DIR"/s3_download_*.log 2>/dev/null | wc -l)
-    if [[ $log_count -gt 10 ]]; then
-        ls -1t "$SCRIPT_DIR"/s3_download_*.log | tail -n +11 | xargs rm -f
-        print_info "Cleaned up old log files"
-    fi
-    
-    # Optionally remove SSM document
-    if aws ssm describe-document --name "$SSM_DOC_DOWNLOAD" --region "$AWS_REGION" &>/dev/null; then
-        echo -n "Remove SSM document '$SSM_DOC_DOWNLOAD'? (y/N): "
-        read -r response
-        if [[ "$response" =~ ^[Yy]$ ]]; then
-            aws ssm delete-document --name "$SSM_DOC_DOWNLOAD" --region "$AWS_REGION" &>/dev/null
-            print_info "Removed SSM document"
-        fi
-    fi
-    
-    print_success "Cleanup complete"
-}
-
-# Function to save state
-save_state() {
-    local instance_id="$1"
-    local phase="$2"
-    local status="$3"
-    
-    cat > "$STATE_FILE" <<EOF
-{
-    "instance_id": "$instance_id",
-    "phase": "$phase",
-    "status": "$status",
-    "timestamp": "$(date -Iseconds)",
-    "software_count": ${#SOFTWARE_KEYS[@]}
-}
-EOF
-}
-
 # Main execution function
 main() {
     local instance_id=""
@@ -616,38 +849,25 @@ main() {
                 show_usage
                 exit 0
                 ;;
-            -d|--dry-run)
-                DRY_RUN=true
-                shift
-                ;;
-            --skip-validation)
-                SKIP_VALIDATION=true
-                shift
-                ;;
-            -a|--auto-approve)
-                AUTO_APPROVE=true
-                shift
-                ;;
             -r|--region)
                 AWS_REGION="$2"
                 shift 2
                 ;;
-            -l|--list)
-                list_configured_software
-                exit 0
-                ;;
-            -s|--status)
-                action="status"
+            --register-document)
+                action="register"
                 shift
                 ;;
-            -c|--cleanup)
-                cleanup_resources
-                exit 0
+            --list-documents)
+                action="list"
+                shift
                 ;;
-            --register-documents)
-                check_prerequisites
-                register_ssm_document
-                exit 0
+            --verify-document)
+                action="verify"
+                shift
+                ;;
+            --status)
+                action="status"
+                shift
                 ;;
             -*)
                 print_error "Unknown option: $1"
@@ -667,21 +887,48 @@ main() {
         esac
     done
     
-    # Validate instance ID
-    if [[ -z "$instance_id" ]]; then
-        print_error "Instance ID is required"
-        show_usage
-        exit 1
-    fi
-    
-    print_info "🚀 S3 Installer Download Script"
-    print_info "Instance: $instance_id"
+    print_info "🚀 Debug Multi-Installer Download Script"
     print_info "Region: $AWS_REGION"
+    print_info "S3 Access Point: $S3_ACCESS_POINT_ARN"
     print_info "Software packages: ${#SOFTWARE_KEYS[@]}"
     echo ""
     
     # Check prerequisites
     check_prerequisites
+    
+    # Check for required SSM document file for register and download actions
+    if [[ "$action" == "register" ]] || [[ "$action" == "download" ]]; then
+        local doc_file="$SCRIPT_DIR/ssm_doc_download_cmake_debug.json"
+        if [[ ! -f "$doc_file" ]]; then
+            print_error "Required SSM document file not found: $doc_file"
+            print_info "Please ensure ssm_doc_download_cmake_debug.json exists in the same directory as this script"
+            print_info "Current directory: $SCRIPT_DIR"
+            exit 1
+        fi
+    fi
+    
+    # Handle different actions
+    if [[ "$action" == "register" ]]; then
+        register_ssm_document
+        exit $?
+    fi
+    
+    if [[ "$action" == "list" ]]; then
+        list_ssm_documents
+        exit $?
+    fi
+    
+    if [[ "$action" == "verify" ]]; then
+        verify_ssm_document "$SSM_DOC_DEBUG"
+        exit $?
+    fi
+    
+    # Validate instance ID for actions that need it
+    if [[ -z "$instance_id" ]]; then
+        print_error "Instance ID is required"
+        show_usage
+        exit 1
+    fi
     
     # Validate instance
     if ! validate_instance "$instance_id"; then
@@ -689,75 +936,35 @@ main() {
         exit 1
     fi
     
-    # Handle different actions
     if [[ "$action" == "status" ]]; then
         check_download_status "$instance_id"
         exit 0
     fi
     
-    # Dry run mode
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "DRY RUN MODE - No changes will be made"
+    # For download action, verify document first
+    print_info "📋 Verifying SSM document..."
+    if ! verify_ssm_document "$SSM_DOC_DEBUG"; then
+        print_warning "SSM document not found or not active"
+        print_info "Attempting to register document..."
         
-        # List software
-        list_configured_software
-        
-        # Validate S3 objects
-        if [[ "$SKIP_VALIDATION" != true ]]; then
-            validate_s3_objects
-        fi
-        
-        print_success "Dry run complete"
-        exit 0
-    fi
-    
-    # Confirm download
-    if [[ "$AUTO_APPROVE" != true ]]; then
-        echo ""
-        print_warning "This will download ${#SOFTWARE_KEYS[@]} software packages"
-        echo -n "Do you want to continue? (y/N): "
-        read -r response
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            print_info "Download cancelled"
-            exit 0
-        fi
-    fi
-    
-    # Phase 1: Validate S3 objects
-    if [[ "$SKIP_VALIDATION" != true ]]; then
-        print_info "📋 Phase 1: Validating S3 objects..."
-        save_state "$instance_id" "validation" "in_progress"
-        
-        if validate_s3_objects; then
-            save_state "$instance_id" "validation" "completed"
-            print_success "✅ Validation completed"
-        else
-            save_state "$instance_id" "validation" "failed"
-            print_error "❌ Validation failed"
+        if ! register_ssm_document; then
+            print_error "Failed to register SSM document"
             exit 1
         fi
-    else
-        print_info "Skipping S3 validation"
     fi
     
-    # Phase 2: Register SSM document
-    print_info "📋 Phase 2: Registering SSM document..."
-    if register_ssm_document; then
-        print_success "✅ SSM document registered"
-    else
-        print_error "❌ SSM document registration failed"
+    # Validate S3 objects
+    print_info "📋 Validating S3 objects..."
+    if ! validate_s3_objects; then
+        print_error "S3 validation failed"
         exit 1
     fi
     
-    # Phase 3: Download installers
-    print_info "📥 Phase 3: Downloading installers..."
-    save_state "$instance_id" "download" "in_progress"
-    
+    # Download installers
+    print_info "📥 Downloading installers..."
     if download_installers "$instance_id"; then
-        save_state "$instance_id" "download" "completed"
         print_success "✅ Downloads completed"
     else
-        save_state "$instance_id" "download" "failed"
         print_error "❌ Downloads failed"
         exit 1
     fi
@@ -766,9 +973,8 @@ main() {
     print_info "📊 Final Status Check..."
     check_download_status "$instance_id"
     
-    print_success "✅ S3 Installer Download workflow complete!"
+    print_success "✅ Debug Multi-Installer Download workflow complete!"
     print_info "Log file: $LOG_FILE"
-    print_info "State file: $STATE_FILE"
 }
 
 # Execute main function

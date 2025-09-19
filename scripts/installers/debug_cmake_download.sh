@@ -29,7 +29,7 @@ SSM_DOC_DEBUG="DebugCMakeDownload"
 # CMake configuration
 CMAKE_S3_KEY="CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
 CMAKE_NAME="CMake"
-CMAKE_DESTINATION="C:\\downloads\\cmake"
+CMAKE_DESTINATION="C:/downloads/cmake"
 
 # Function to log messages
 log_message() {
