@@ -135,10 +135,11 @@ Simplified script to debug CMake download from S3 access point.
 OPTIONS:
     -h, --help              Show this help message
     -r, --region            AWS region [default: us-east-1]
-    --register-document     Register debug SSM document
+    --register-document     Register debug SSM document (always creates new version)
     --list-documents        List existing SSM documents
     --verify-document       Verify SSM document is ready
     --status                Check download status
+    --cleanup               Delete all registered SSM documents
 
 REQUIRED:
     instance-id             EC2 instance ID to download CMake to
@@ -149,6 +150,7 @@ EXAMPLES:
     $0 --list-documents                       List SSM documents
     $0 --verify-document                      Verify document is ready
     $0 --status i-0abc123def456789            Check download status
+    $0 --cleanup                              Delete all SSM documents
 
 EOF
 }
@@ -547,9 +549,79 @@ verify_ssm_document() {
     return 0
 }
 
-# Function to register SSM document
+# Function to cleanup all SSM documents
+cleanup_ssm_documents() {
+    print_info "🧹 Cleaning up all registered SSM documents..."
+    
+    # Get all Command documents owned by this account
+    local docs
+    docs=$(aws ssm list-documents \
+        --document-filter-list "key=DocumentType,value=Command" \
+        --region "$AWS_REGION" \
+        --output json 2>/tmp/ssm_cleanup_error.txt)
+    
+    local exit_code=$?
+    
+    if [[ $exit_code -ne 0 ]]; then
+        local error_output=$(cat /tmp/ssm_cleanup_error.txt 2>/dev/null || echo "Unknown error")
+        print_error "Failed to list documents for cleanup: $error_output"
+        rm -f /tmp/ssm_cleanup_error.txt
+        return 1
+    fi
+    
+    rm -f /tmp/ssm_cleanup_error.txt
+    
+    # Validate JSON before parsing
+    if ! echo "$docs" | jq empty 2>/dev/null; then
+        print_error "Invalid JSON response from AWS CLI during cleanup"
+        return 1
+    fi
+    
+    # Get document names owned by this account
+    local doc_names
+    doc_names=$(echo "$docs" | jq -r '.DocumentIdentifiers[] | select(.Owner == "Self") | .Name' 2>/dev/null)
+    
+    if [[ -z "$doc_names" ]]; then
+        print_info "No documents found to cleanup"
+        return 0
+    fi
+    
+    local deleted_count=0
+    local failed_count=0
+    
+    # Delete each document
+    while IFS= read -r doc_name; do
+        if [[ -n "$doc_name" ]]; then
+            print_progress "Deleting document: $doc_name"
+            
+            if aws ssm delete-document \
+                --name "$doc_name" \
+                --region "$AWS_REGION" 2>/tmp/ssm_delete_error.txt; then
+                print_success "  ✅ Deleted: $doc_name"
+                ((deleted_count++))
+            else
+                local delete_error=$(cat /tmp/ssm_delete_error.txt 2>/dev/null || echo "Unknown error")
+                print_warning "  ⚠️  Failed to delete $doc_name: $delete_error"
+                ((failed_count++))
+            fi
+            rm -f /tmp/ssm_delete_error.txt
+        fi
+    done <<< "$doc_names"
+    
+    print_info "Cleanup Summary: $deleted_count deleted, $failed_count failed"
+    
+    if [[ $failed_count -eq 0 ]]; then
+        print_success "✅ All documents cleaned up successfully"
+        return 0
+    else
+        print_warning "⚠️  Some documents could not be deleted"
+        return 1
+    fi
+}
+
+# Function to register SSM document (always creates new version)
 register_ssm_document() {
-    print_info "Registering debug SSM document: $SSM_DOC_DEBUG"
+    print_info "Registering debug SSM document: $SSM_DOC_DEBUG (always creates new version)"
     
     # Define path to SSM document JSON file
     local doc_file="$SCRIPT_DIR/ssm_doc_download_cmake_debug.json"
@@ -572,7 +644,7 @@ register_ssm_document() {
     
     print_success "JSON validation passed"
     
-    # Check if document already exists
+    # Always delete existing document to ensure new version
     print_progress "Checking for existing document..."
     local existing_doc
     existing_doc=$(aws ssm describe-document \
@@ -581,7 +653,7 @@ register_ssm_document() {
         --output json 2>/dev/null)
     
     if [[ $? -eq 0 ]]; then
-        print_warning "Document already exists, deleting old version..."
+        print_info "Document already exists, deleting to create new version..."
         
         # Delete existing document
         if aws ssm delete-document \
@@ -869,6 +941,10 @@ main() {
                 action="status"
                 shift
                 ;;
+            --cleanup)
+                action="cleanup"
+                shift
+                ;;
             -*)
                 print_error "Unknown option: $1"
                 show_usage
@@ -920,6 +996,11 @@ main() {
     
     if [[ "$action" == "verify" ]]; then
         verify_ssm_document "$SSM_DOC_DEBUG"
+        exit $?
+    fi
+    
+    if [[ "$action" == "cleanup" ]]; then
+        cleanup_ssm_documents
         exit $?
     fi
     
