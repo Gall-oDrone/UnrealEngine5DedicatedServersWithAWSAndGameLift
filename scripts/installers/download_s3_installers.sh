@@ -45,16 +45,28 @@ SSM_DOCS_DIR="$SCRIPT_DIR/ssm"
 declare -a SOFTWARE_KEYS=(
     "CMake/Windows x86_64/Version 4.1.1/cmake-4.1.1-windows-x86_64.msi"
     "Git/Windows x86_64/Version 2.51.0/Git-2.51.0-64-bit.exe"
+    "NASM/Windows x86_64/Version 2.16.03/nasm-2.16.03-installer-x64.exe"
+    "Python Manager/Windows x86_64/Version 25.0b14/python-manager-25.0b14.msi"
+    "Strawberry Perl/Windows x86_64/Version 5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
+    "Visual Studio 2022/Visual Studio 2022 v17.14.15/Community Edition/VisualStudioSetup.exe"
 )
 
 declare -a SOFTWARE_NAMES=(
     "CMake"
     "Git for Windows"
+    "NASM"
+    "Python Manager"
+    "Strawberry Perl"
+    "Visual Studio 2022 Community"
 )
 
 declare -a SOFTWARE_DESTINATIONS=(
     "C:/downloads/cmake"
     "C:/downloads/git"
+    "C:/downloads/nasm"
+    "C:/downloads/python"
+    "C:/downloads/perl"
+    "C:/downloads/visualstudio"
 )
 
 # Individual installer configuration (for separate SSM documents approach)
@@ -65,6 +77,7 @@ declare -a INSTALLER_ORDER=(
     "nasm"
     "python_manager"
     "strawberry_perl"
+    "visual_studio_2022"
 )
 
 # Installer configurations using associative arrays
@@ -98,6 +111,12 @@ declare -A INSTALLER_CONFIGS=(
     ["strawberry_perl_destination"]="C:/downloads/perl"
     ["strawberry_perl_doc_name"]="DownloadStrawberryPerl"
     ["strawberry_perl_doc_file"]="ssm_doc_download_strawberry_perl.json"
+    
+    ["visual_studio_2022_name"]="Visual Studio 2022 Community"
+    ["visual_studio_2022_key"]="Visual Studio 2022/Visual Studio 2022 v17.14.15/Community Edition/VisualStudioSetup.exe"
+    ["visual_studio_2022_destination"]="C:/downloads/visualstudio"
+    ["visual_studio_2022_doc_name"]="DownloadVisualStudio2022"
+    ["visual_studio_2022_doc_file"]="ssm_doc_download_visual_studio_2022.json"
 )
 
 # Function to ensure logs directory exists
@@ -783,6 +802,10 @@ check_download_status() {
             "$downloads = @()",
             "if (Test-Path \"C:\\downloads\\cmake\\cmake-4.1.1-windows-x86_64.msi\") { $downloads += \"CMake\" }",
             "if (Test-Path \"C:\\downloads\\git\\Git-2.51.0-64-bit.exe\") { $downloads += \"Git\" }",
+            "if (Test-Path \"C:\\downloads\\nasm\\nasm-2.16.03-installer-x64.exe\") { $downloads += \"NASM\" }",
+            "if (Test-Path \"C:\\downloads\\python\\python-manager-25.0b14.msi\") { $downloads += \"Python Manager\" }",
+            "if (Test-Path \"C:\\downloads\\perl\\strawberry-perl-5.40.2.1-64bit.msi\") { $downloads += \"Strawberry Perl\" }",
+            "if (Test-Path \"C:\\downloads\\visualstudio\\VisualStudioSetup.exe\") { $downloads += \"Visual Studio 2022\" }",
             "if ($downloads.Count -eq 0) { \"No files downloaded\" } else { \"Downloaded: \" + ($downloads -join \", \") }"
         ]' \
         --region "$AWS_REGION" \
