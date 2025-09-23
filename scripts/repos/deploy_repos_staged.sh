@@ -31,6 +31,7 @@ declare -a REPO_URLS=(
     # Example: "https://github.com/username/repository.git"
     # Example: "https://github.com/EpicGames/UnrealEngine.git"
     https://github.com/amazon-gamelift/amazon-gamelift-plugin-unreal.git
+    https://github.com/openssl/openssl.git
 )
 
 # Array of repository names (corresponding to REPO_URLS array)
@@ -39,6 +40,7 @@ declare -a REPO_NAMES=(
     # Example: "My Project"
     # Example: "Unreal Engine"
     "Amazon GameLift Plugin for Unreal Engine"
+    "OpenSSL"
 )
 
 # Array of repository branches (corresponding to REPO_URLS array)
@@ -47,6 +49,7 @@ declare -a REPO_BRANCHES=(
     # Example: "main"
     # Example: "release"
     "main"
+    "master"
 )
 
 # Array of destination directories (corresponding to REPO_URLS array)
@@ -55,6 +58,7 @@ declare -a REPO_DESTINATIONS=(
     # Example: "C:\Projects\MyProject"
     # Example: "C:\UnrealEngine"
     "D:\UnrealEngine\AmazonGameLiftPlugin"
+    "D:\OpenSSL"
 )
 
 # PowerShell script for repository cloning
