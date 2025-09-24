@@ -154,3 +154,9 @@ variable "data_volume_snapshot_id" {
   type        = string
   default     = ""
 }
+
+variable "custom_ami_id" {
+  description = "Custom AMI ID to use instead of the default Windows Server AMI (leave empty to use default)"
+  type        = string
+  default     = ""
+}

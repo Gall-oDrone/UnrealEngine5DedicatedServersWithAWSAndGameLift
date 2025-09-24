@@ -18,6 +18,11 @@ key_pair_name    = "your-key-pair-name"  # Optional: for SSH/RDP access
 root_volume_size = 100
 data_volume_size = 500
 
+# Custom AMI Configuration (Optional)
+# If you have a custom AMI with pre-installed tools, specify it here
+# Leave empty to use the default Windows Server 2022 AMI
+custom_ami_id = ""  # e.g., "ami-1234567890abcdef0"
+
 # Security configuration - IMPORTANT: Restrict to your IP addresses
 allowed_cidr_blocks = [
   "YOUR_IP_ADDRESS/32",  # Replace with your actual IP

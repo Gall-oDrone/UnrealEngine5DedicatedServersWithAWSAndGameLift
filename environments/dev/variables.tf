@@ -18,6 +18,13 @@ variable "owner" {
   default     = "game-dev-team"
 }
 
+# Custom AMI Configuration
+variable "custom_ami_id" {
+  description = "Custom AMI ID to use instead of the default Windows Server AMI (leave empty to use default)"
+  type        = string
+  default     = ""
+}
+
 # Networking variables
 variable "vpc_cidr_block" {
   description = "CIDR block for the VPC"

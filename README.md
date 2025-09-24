@@ -53,15 +53,21 @@ UnrealEngine5DedicatedServersWithAWSAndGameLift/
 │   ├── dev/                         # Development environment
 │   ├── staging/                     # Staging environment
 │   └── prod/                        # Production environment
-├── scripts/                         # Deployment and validation scripts
+├── scripts/                         # Deployment and automation scripts
+│   ├── ami-builder/                 # Custom AMI creation scripts
+│   ├── cleanup/                     # Infrastructure cleanup scripts
+│   ├── dcv/                         # Desktop Cloud Visualization setup
 │   ├── deployment/                  # Deployment automation
+│   ├── installers/                  # Software installer management
+│   ├── repos/                       # Repository deployment scripts
 │   └── validation/                  # Configuration validation
 ├── docs/                           # Documentation
 │   ├── architecture/               # Architecture documentation
 │   ├── deployment-guides/          # Deployment guides
-│   └── security/                   # Security documentation
-└── .github/                        # GitHub Actions workflows
-    └── workflows/                  # CI/CD pipelines
+│   ├── security/                   # Security documentation
+│   └── troubleshooting/            # Troubleshooting guides
+├── terraform/                      # Legacy Terraform configuration
+└── unreal-engine-5-ide-cfn.yaml   # CloudFormation template
 ```
 
 ## 🚀 Quick Start
@@ -150,11 +156,17 @@ unreal_engine_branch  = "5.4"
 # Deploy dev environment
 ./scripts/deployment/deploy.sh dev
 
-# Plan changes without applying
-./scripts/deployment/deploy.sh dev -p
-
 # Deploy with auto-approve
 ./scripts/deployment/deploy.sh dev -a
+
+# Deploy using simple method
+./scripts/deployment/deploy-simple.sh dev
+
+# Deploy using SSM method
+./scripts/deployment/deploy-simple-ssm.sh dev
+
+# Deploy using staged approach
+./scripts/deployment/deploy-staged.sh dev
 
 # Destroy infrastructure
 ./scripts/deployment/deploy.sh dev -d
@@ -171,6 +183,30 @@ unreal_engine_branch  = "5.4"
 
 # Skip security checks
 ./scripts/validation/validate.sh dev --no-security
+```
+
+### Additional Scripts
+
+```bash
+# Software Installation
+./scripts/installers/setup_installers_bucket.sh          # Setup S3 bucket for installers
+./scripts/installers/download_s3_installers.sh          # Download and install software
+./scripts/installers/debug_cmake_download.sh            # Debug CMake installation
+
+# Repository Management
+./scripts/repos/deploy_repos_staged.sh                  # Deploy repositories to instances
+./scripts/repos/deploy_openssl_ssm_doc.sh               # Deploy OpenSSL build SSM document
+
+# AMI Building
+./scripts/ami-builder/build-custom-ami.sh               # Build custom AMI
+./scripts/ami-builder/cleanup-ami-builder.sh            # Cleanup AMI builder resources
+
+# Desktop Cloud Visualization
+./scripts/dcv/setup_dcv.sh                              # Setup DCV on instances
+./scripts/dcv/dcv_install.ps1                           # DCV installation script
+
+# Infrastructure Cleanup
+./scripts/cleanup/cleanup.sh                            # Cleanup all resources
 ```
 
 ### Manual Terraform Commands
@@ -253,54 +289,46 @@ Configurable alarms for:
 4. **Disable NAT Gateway**: If not needed for private subnets
 5. **Monitor Usage**: Use AWS Cost Explorer
 
-## 🔄 CI/CD Integration
+## 🔄 Automation & Scripts
 
-### GitHub Actions
+### Available Automation
 
-The project includes GitHub Actions workflows for:
-- **Validation**: Automated configuration validation
-- **Security Scanning**: Security best practices checking
-- **Deployment**: Automated deployments to different environments
+The project includes comprehensive automation scripts for:
+- **Infrastructure Deployment**: Multiple deployment strategies (simple, SSM, staged)
+- **Software Installation**: Automated installer management via S3 and SSM
+- **Repository Management**: Automated repository cloning and OpenSSL builds
+- **AMI Building**: Custom AMI creation for optimized instances
+- **Validation**: Configuration and infrastructure validation
+- **Cleanup**: Automated resource cleanup
 
-### Workflow Examples
+### Script Categories
 
-```yaml
-# Validate on pull request
-name: Validate
-on: [pull_request]
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - run: ./scripts/validation/validate.sh dev
-
-# Deploy to staging
-name: Deploy to Staging
-on:
-  push:
-    branches: [main]
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - run: ./scripts/deployment/deploy.sh staging -a
-```
+- **Deployment Scripts**: `scripts/deployment/` - Infrastructure deployment automation
+- **Installer Scripts**: `scripts/installers/` - Software installation management
+- **Repository Scripts**: `scripts/repos/` - Repository and build automation
+- **AMI Scripts**: `scripts/ami-builder/` - Custom AMI creation
+- **DCV Scripts**: `scripts/dcv/` - Desktop Cloud Visualization setup
+- **Validation Scripts**: `scripts/validation/` - Configuration validation
+- **Cleanup Scripts**: `scripts/cleanup/` - Resource cleanup automation
 
 ## 📚 Documentation
 
 ### Architecture Documentation
 
 - [Architecture Overview](docs/architecture/README.md)
-- [Security Design](docs/security/README.md)
-- [Networking Design](docs/architecture/networking.md)
 
 ### Deployment Guides
 
-- [Development Setup](docs/deployment-guides/dev-setup.md)
-- [Production Deployment](docs/deployment-guides/production.md)
-- [Troubleshooting](docs/deployment-guides/troubleshooting.md)
+- [Development Setup](docs/deployment-guides/) - Deployment guides directory
+- [Troubleshooting](docs/troubleshooting/) - Troubleshooting guides
+  - [DCV Connectivity Issues](docs/troubleshooting/DCV_CONNECTIVITY_ISSUE.md)
+
+### Script Documentation
+
+- [Software Installers](scripts/installers/README.md) - Software installation management
+- [Repository Management](scripts/repos/README.md) - Repository deployment and OpenSSL builds
+- [AMI Builder](scripts/ami-builder/README.md) - Custom AMI creation
+- [DCV Setup](scripts/dcv/README.md) - Desktop Cloud Visualization setup
 
 ## 🤝 Contributing
 
@@ -312,7 +340,8 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 2. Create a feature branch
 3. Make your changes
 4. Run validation: `./scripts/validation/validate.sh dev`
-5. Submit a pull request
+5. Test deployment: `./scripts/deployment/deploy.sh dev -a`
+6. Submit a pull request
 
 ## 📄 License
 
@@ -322,15 +351,18 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ### Getting Help
 
-1. **Documentation**: Check the [docs/](docs/) directory
-2. **Issues**: Create an issue on GitHub
-3. **Discussions**: Use GitHub Discussions for questions
+1. **Documentation**: Check the [docs/](docs/) directory and script README files
+2. **Troubleshooting**: Review [troubleshooting guides](docs/troubleshooting/)
+3. **Issues**: Create an issue on GitHub
+4. **Script Help**: Each script directory contains detailed README files
 
 ### Common Issues
 
 - **Instance not accessible**: Check security groups and IP restrictions
 - **High costs**: Review instance types and enable cost optimization features
 - **Compilation failures**: Check Unreal Engine version compatibility
+- **DCV connectivity**: See [DCV troubleshooting guide](docs/troubleshooting/DCV_CONNECTIVITY_ISSUE.md)
+- **Software installation**: Check [installer documentation](scripts/installers/README.md)
 
 ## 🔗 References
 

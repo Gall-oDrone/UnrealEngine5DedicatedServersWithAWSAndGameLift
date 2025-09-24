@@ -15,8 +15,9 @@ resource "random_password" "windows_admin" {
   numeric = true
 }
 
-# Data source for Windows AMI
+# Data source for Windows AMI (only used if custom_ami_id is not provided)
 data "aws_ami" "windows_server" {
+  count       = var.custom_ami_id == "" ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
   
@@ -29,6 +30,11 @@ data "aws_ami" "windows_server" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+}
+
+# Local value to determine which AMI to use
+locals {
+  ami_id = var.custom_ami_id != "" ? var.custom_ami_id : data.aws_ami.windows_server[0].id
 }
 
 # Security Group for EC2 instances
@@ -212,7 +218,7 @@ resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
 resource "aws_spot_instance_request" "ue5_server_spot" {
   count = var.enable_spot_instance ? 1 : 0
   
-  ami                    = data.aws_ami.windows_server.id
+  ami                    = local.ami_id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.ec2.id]
@@ -246,7 +252,7 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
 resource "aws_instance" "ue5_server" {
   count = var.enable_spot_instance ? 0 : 1
   
-  ami                    = data.aws_ami.windows_server.id
+  ami                    = local.ami_id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.ec2.id]
