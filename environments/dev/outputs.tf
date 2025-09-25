@@ -40,6 +40,11 @@ output "data_volume_id" {
   value       = module.compute.data_volume_id
 }
 
+output "data_volume_fsr_id" {
+  description = "ID of the Fast Snapshot Restore for data volume (if enabled)"
+  value       = module.compute.data_volume_fsr_id
+}
+
 output "dashboard_name" {
   description = "Name of the CloudWatch dashboard"
   value       = module.monitoring.dashboard_name

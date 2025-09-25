@@ -47,4 +47,9 @@ output "windows_admin_password" {
   description = "Windows Administrator password"
   value       = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
   sensitive   = true
+}
+
+output "data_volume_fsr_id" {
+  description = "ID of the Fast Snapshot Restore for data volume (if enabled)"
+  value       = var.data_volume_snapshot_fsr && var.data_volume_snapshot_id != "" ? aws_ebs_fast_snapshot_restore.data_volume_fsr[0].id : null
 } 

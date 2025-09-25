@@ -170,3 +170,9 @@ variable "data_volume_snapshot_id" {
   type        = string
   default     = ""
 } 
+
+variable "data_volume_snapshot_fsr" {
+  description = "Enabling Fast Snapshot Restore for data volume (default is false)"
+  type        = bool
+  default     = false
+} 

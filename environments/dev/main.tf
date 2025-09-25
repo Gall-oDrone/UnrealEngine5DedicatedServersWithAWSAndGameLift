@@ -94,6 +94,7 @@ module "compute" {
   s3_bucket_name        = var.s3_bucket_name
   root_volume_snapshot_id = var.root_volume_snapshot_id
   data_volume_snapshot_id = var.data_volume_snapshot_id
+  data_volume_snapshot_fsr = var.data_volume_snapshot_fsr
   custom_ami_id         = var.custom_ami_id
   common_tags           = local.common_tags
 }

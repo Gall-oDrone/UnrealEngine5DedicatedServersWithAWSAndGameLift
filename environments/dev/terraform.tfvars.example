@@ -52,4 +52,9 @@ notification_email       = "your-email@example.com"  # Required if enable_sns_no
 # If you have existing snapshots, specify their IDs to create volumes from them
 # Leave empty to create new volumes
 root_volume_snapshot_id = ""  # e.g., "snap-0123456789abcdef0"
-data_volume_snapshot_id = ""  # e.g., "snap-0fedcba9876543210" 
+data_volume_snapshot_id = ""  # e.g., "snap-0fedcba9876543210"
+
+# Fast Snapshot Restore Configuration
+# Enable Fast Snapshot Restore for data volume (requires data_volume_snapshot_id to be set)
+# This provides faster volume creation from snapshots but incurs additional costs
+data_volume_snapshot_fsr = false  # Set to true to enable FSR for data volume 

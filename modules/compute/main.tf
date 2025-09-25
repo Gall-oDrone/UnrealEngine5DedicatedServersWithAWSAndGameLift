@@ -309,6 +309,18 @@ resource "aws_ebs_volume" "data_volume" {
   })
 }
 
+# Fast Snapshot Restore for data volume (if enabled)
+resource "aws_ebs_fast_snapshot_restore" "data_volume_fsr" {
+  count = var.data_volume_snapshot_fsr && var.data_volume_snapshot_id != "" ? 1 : 0
+  
+  availability_zone = var.availability_zone
+  snapshot_id       = var.data_volume_snapshot_id
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-data-volume-fsr"
+  })
+}
+
 # EBS Volume Attachment for on-demand instance
 resource "aws_volume_attachment" "data_volume_attachment" {
   count       = var.enable_spot_instance ? 0 : 1
