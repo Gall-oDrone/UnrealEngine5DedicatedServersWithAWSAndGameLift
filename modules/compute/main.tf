@@ -315,10 +315,6 @@ resource "aws_ebs_fast_snapshot_restore" "data_volume_fsr" {
   
   availability_zone = var.availability_zone
   snapshot_id       = var.data_volume_snapshot_id
-
-  tags = merge(var.common_tags, {
-    Name = "${var.project_name}-data-volume-fsr"
-  })
 }
 
 # EBS Volume Attachment for on-demand instance

@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Unreal Engine 5 Infrastructure Deployment Script
-# This script deploys the infrastructure using Terraform with proper error handling
+# Enhanced Staged Deployment Script with Better Progress Tracking
+# This script deploys the infrastructure with detailed progress monitoring
 
 set -euo pipefail
 
@@ -10,22 +10,21 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 ENVIRONMENTS_DIR="$PROJECT_ROOT/environments"
+TERRAFORM_DIR="$ENVIRONMENTS_DIR/dev"
 
 # Default values
 ENVIRONMENT="dev"
 AUTO_APPROVE=false
-PLAN_ONLY=false
-DESTROY=false
-BACKEND_CONFIG=""
+SKIP_DCV_CHECK=false
 
-# Function to print colored output
-print_status() {
+print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
@@ -41,69 +40,59 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+print_progress() {
+    echo -e "${CYAN}[PROGRESS]${NC} $1"
+}
+
 # Function to show usage
 show_usage() {
     cat << EOF
-Usage: $0 [OPTIONS] [ENVIRONMENT]
+Usage: $0 [OPTIONS]
 
-Deploy Unreal Engine 5 infrastructure using Terraform.
+Deploy Unreal Engine 5 infrastructure with NiceDCV in stages.
 
 OPTIONS:
     -h, --help              Show this help message
     -e, --environment       Environment to deploy (dev, staging, prod) [default: dev]
     -a, --auto-approve      Auto-approve Terraform changes
-    -p, --plan-only         Only run terraform plan, don't apply
+    --skip-dcv-check        Skip DCV connectivity check
     -d, --destroy           Destroy the infrastructure
-    -b, --backend-config    Backend configuration file
-    -v, --validate          Validate Terraform configuration
-
-ENVIRONMENT:
-    dev                     Development environment (default)
-    staging                 Staging environment
-    prod                    Production environment
+    -p, --password          Retrieve Windows Administrator password only
 
 EXAMPLES:
-    $0                      Deploy dev environment
-    $0 -e prod -a          Deploy production environment with auto-approve
-    $0 -e staging -p       Plan staging environment changes
-    $0 -e dev -d           Destroy dev environment
-    $0 -v                  Validate Terraform configuration
+    $0                      Deploy dev environment with prompts
+    $0 -a                   Deploy with auto-approval
+    $0 --skip-dcv-check     Deploy without checking DCV connectivity
+    $0 -d                   Destroy infrastructure
+    $0 -p                   Get admin password only
 
 EOF
 }
 
-# Function to validate environment
-validate_environment() {
-    local env="$1"
-    if [[ ! -d "$ENVIRONMENTS_DIR/$env" ]]; then
-        print_error "Environment '$env' does not exist. Available environments:"
-        ls -1 "$ENVIRONMENTS_DIR" 2>/dev/null || print_error "No environments found"
-        exit 1
-    fi
-}
-
 # Function to check prerequisites
 check_prerequisites() {
-    print_status "Checking prerequisites..."
+    print_info "Checking prerequisites..."
     
-    # Check if Terraform is installed
+    local missing_tools=()
+    
+    # Check Terraform
     if ! command -v terraform &> /dev/null; then
-        print_error "Terraform is not installed. Please install Terraform >= 1.0"
-        exit 1
+        missing_tools+=("terraform")
     fi
     
-    # Check Terraform version
-    local tf_version=$(terraform version -json | jq -r '.terraform_version')
-    local required_version="1.0.0"
-    
-    if [[ "$(printf '%s\n' "$required_version" "$tf_version" | sort -V | head -n1)" != "$required_version" ]]; then
-        print_error "Terraform version $tf_version is older than required version $required_version"
-        exit 1
-    fi
-    
-    # Check if AWS CLI is installed
+    # Check AWS CLI
     if ! command -v aws &> /dev/null; then
-        print_error "AWS CLI is not installed. Please install AWS CLI"
+        missing_tools+=("aws-cli")
+    fi
+    
+    # Check jq for JSON parsing
+    if ! command -v jq &> /dev/null; then
+        missing_tools+=("jq")
+    fi
+    
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        print_error "Missing required tools: ${missing_tools[*]}"
+        print_error "Please install the missing tools and try again"
         exit 1
     fi
     
@@ -116,117 +105,353 @@ check_prerequisites() {
     print_success "Prerequisites check passed"
 }
 
-# Function to validate Terraform configuration
-validate_terraform() {
-    print_status "Validating Terraform configuration..."
+# Function to wait for EC2 instance to be ready
+wait_for_instance() {
+    local instance_id=$1
+    local max_wait=${2:-600}  # Default 10 minutes
     
-    local env_dir="$ENVIRONMENTS_DIR/$ENVIRONMENT"
-    cd "$env_dir"
+    local elapsed=0
+    local interval=10
     
-    if ! terraform validate; then
-        print_error "Terraform validation failed"
-        exit 1
-    fi
+    print_info "⏳ Waiting for instance $instance_id to be ready..."
     
-    print_success "Terraform validation passed"
+    while [ $elapsed -lt $max_wait ]; do
+        # Check instance status
+        instance_state=$(aws ec2 describe-instances \
+            --instance-ids "$instance_id" \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text 2>/dev/null || echo "unknown")
+        
+        status_checks=$(aws ec2 describe-instance-status \
+            --instance-ids "$instance_id" \
+            --query 'InstanceStatuses[0].InstanceStatus.Status' \
+            --output text 2>/dev/null || echo "unknown")
+        
+        if [[ "$instance_state" == "running" ]] && [[ "$status_checks" == "ok" ]]; then
+            print_success "Instance $instance_id is ready!"
+            return 0
+        fi
+        
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        
+        if [ $((elapsed % 30)) -eq 0 ]; then
+            print_info "Instance state: $instance_state, Status checks: $status_checks ($elapsed seconds elapsed)"
+        fi
+    done
+    
+    print_warning "Timeout waiting for instance $instance_id"
+    return 1
 }
 
-# Function to initialize Terraform
-init_terraform() {
-    print_status "Initializing Terraform..."
+# Enhanced function to monitor user data progress
+monitor_userdata_progress() {
+    local instance_id=$1
+    local max_wait=${2:-2400}  # Default 40 minutes for full installation
     
-    local env_dir="$ENVIRONMENTS_DIR/$ENVIRONMENT"
-    cd "$env_dir"
+    local elapsed=0
+    local interval=20
+    local last_progress=""
     
-    local init_args=""
-    if [[ -n "$BACKEND_CONFIG" ]]; then
-        init_args="-backend-config=$BACKEND_CONFIG"
+    print_info "⏳ Monitoring Windows setup progress..."
+    print_info "Installation stages: Prerequisites → DCV Installation → Configuration → Completion"
+    
+    while [ $elapsed -lt $max_wait ]; do
+        # Wait for SSM to be available
+        local ssm_status=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$instance_id" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text 2>/dev/null || echo "Offline")
+        
+        if [[ "$ssm_status" == "Online" ]]; then
+            # Check multiple progress markers
+            local progress_check=$(aws ssm send-command \
+                --instance-ids "$instance_id" \
+                --document-name "AWS-RunPowerShellScript" \
+                --parameters 'commands=[
+                    "$stages = @()",
+                    "if (Test-Path \"C:\\logs\\stage-prerequisites.txt\") { $stages += \"Prerequisites\" }",
+                    "if (Test-Path \"C:\\logs\\stage-dcv-download.txt\") { $stages += \"DCV-Download\" }",
+                    "if (Test-Path \"C:\\logs\\stage-dcv-install.txt\") { $stages += \"DCV-Install\" }",
+                    "if (Test-Path \"C:\\logs\\stage-dcv-config.txt\") { $stages += \"DCV-Config\" }",
+                    "if (Test-Path \"C:\\logs\\dcv-install-complete.txt\") { $stages += \"Complete\" }",
+                    "if ($stages.Count -eq 0) { \"Starting\" } else { $stages -join \",\" }"
+                ]' \
+                --query 'Command.CommandId' \
+                --output text 2>/dev/null || echo "")
+            
+            if [ -n "$progress_check" ]; then
+                sleep 5
+                local current_progress=$(aws ssm get-command-invocation \
+                    --command-id "$progress_check" \
+                    --instance-id "$instance_id" \
+                    --query 'StandardOutputContent' \
+                    --output text 2>/dev/null || echo "Unknown")
+                
+                # Only print if progress changed
+                if [[ "$current_progress" != "$last_progress" ]]; then
+                    print_progress "Current stage: $current_progress"
+                    last_progress="$current_progress"
+                fi
+                
+                # Check if complete
+                if [[ "$current_progress" == *"Complete"* ]]; then
+                    print_success "✅ Setup completed successfully!"
+                    
+                    # Get installation summary
+                    print_info "Retrieving installation summary..."
+                    local summary_check=$(aws ssm send-command \
+                        --instance-ids "$instance_id" \
+                        --document-name "AWS-RunPowerShellScript" \
+                        --parameters 'commands=["Get-Content C:\\logs\\dcv-install-complete.txt -ErrorAction SilentlyContinue"]' \
+                        --query 'Command.CommandId' \
+                        --output text 2>/dev/null || echo "")
+                    
+                    if [ -n "$summary_check" ]; then
+                        sleep 5
+                        local summary=$(aws ssm get-command-invocation \
+                            --command-id "$summary_check" \
+                            --instance-id "$instance_id" \
+                            --query 'StandardOutputContent' \
+                            --output text 2>/dev/null || echo "")
+                        
+                        if [ -n "$summary" ]; then
+                            echo ""
+                            echo "$summary"
+                            echo ""
+                        fi
+                    fi
+                    
+                    return 0
+                fi
+            fi
+            
+            # Check for errors in log
+            if [ $((elapsed % 60)) -eq 0 ]; then
+                local error_check=$(aws ssm send-command \
+                    --instance-ids "$instance_id" \
+                    --document-name "AWS-RunPowerShellScript" \
+                    --parameters 'commands=["Get-Content C:\\logs\\dcv-install.log -Tail 5 -ErrorAction SilentlyContinue | Select-String -Pattern \"ERROR\",\"Failed\""]' \
+                    --query 'Command.CommandId' \
+                    --output text 2>/dev/null || echo "")
+                
+                if [ -n "$error_check" ]; then
+                    sleep 5
+                    local errors=$(aws ssm get-command-invocation \
+                        --command-id "$error_check" \
+                        --instance-id "$instance_id" \
+                        --query 'StandardOutputContent' \
+                        --output text 2>/dev/null || echo "")
+                    
+                    if [ -n "$errors" ] && [[ "$errors" != "null" ]]; then
+                        print_warning "Errors detected in installation log:"
+                        echo "$errors"
+                    fi
+                fi
+            fi
+        else
+            if [ $((elapsed % 30)) -eq 0 ]; then
+                print_info "Waiting for SSM agent to come online (status: $ssm_status)..."
+            fi
+        fi
+        
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        
+        # Progress updates
+        if [ $((elapsed % 120)) -eq 0 ]; then
+            print_info "Still monitoring setup... ($((elapsed / 60)) minutes elapsed)"
+        fi
+    done
+    
+    print_warning "Timeout after $((max_wait / 60)) minutes"
+    print_warning "Setup might still be running. Attempting to get latest status..."
+    
+    # Try to get final status
+    local final_check=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunPowerShellScript" \
+        --parameters 'commands=["Get-Content C:\\logs\\dcv-install.log -Tail 20 -ErrorAction SilentlyContinue"]' \
+        --query 'Command.CommandId' \
+        --output text 2>/dev/null || echo "")
+    
+    if [ -n "$final_check" ]; then
+        sleep 5
+        local final_log=$(aws ssm get-command-invocation \
+            --command-id "$final_check" \
+            --instance-id "$instance_id" \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null || echo "")
+        
+        if [ -n "$final_log" ]; then
+            print_info "Last 20 lines of installation log:"
+            echo "$final_log"
+        fi
     fi
     
-    if ! terraform init $init_args; then
-        print_error "Terraform initialization failed"
-        exit 1
-    fi
-    
-    print_success "Terraform initialized successfully"
+    return 1
 }
 
-# Function to plan Terraform changes
-plan_terraform() {
-    print_status "Planning Terraform changes..."
+# Function to test DCV connectivity
+test_dcv_connectivity() {
+    local public_ip=$1
+    local dcv_port=8443
     
-    local env_dir="$ENVIRONMENTS_DIR/$ENVIRONMENT"
-    cd "$env_dir"
+    print_info "Testing DCV connectivity at https://$public_ip:$dcv_port ..."
     
-    if ! terraform plan -out=tfplan; then
-        print_error "Terraform plan failed"
-        exit 1
+    # Test if port is open
+    if timeout 5 bash -c "echo > /dev/tcp/$public_ip/$dcv_port" 2>/dev/null; then
+        print_success "✅ DCV port $dcv_port is open"
+        
+        # Try to get DCV session info (will fail with auth error but proves DCV is running)
+        response=$(curl -sk --max-time 5 "https://$public_ip:$dcv_port/describe-session" 2>/dev/null || echo "")
+        
+        if [[ "$response" == *"session"* ]] || [[ "$response" == *"error"* ]] || [[ "$response" == *"unauthorized"* ]]; then
+            print_success "✅ DCV server is responding"
+            return 0
+        else
+            print_warning "⚠️ DCV port is open but server might still be starting"
+            return 1
+        fi
+    else
+        print_warning "⚠️ DCV port $dcv_port is not accessible yet"
+        return 1
     fi
-    
-    print_success "Terraform plan completed successfully"
 }
 
-# Function to apply Terraform changes
-apply_terraform() {
-    print_status "Applying Terraform changes..."
+# Main deployment stages
+deploy_infrastructure() {
+    cd "$TERRAFORM_DIR"
     
-    local env_dir="$ENVIRONMENTS_DIR/$ENVIRONMENT"
-    cd "$env_dir"
+    # Stage 1: Network Infrastructure
+    print_info "📦 Stage 1: Deploying network infrastructure (VPC, Subnets, Security Groups)..."
     
     local apply_args=""
     if [[ "$AUTO_APPROVE" == true ]]; then
         apply_args="-auto-approve"
     fi
     
-    if [[ "$DESTROY" == true ]]; then
-        if ! terraform destroy $apply_args; then
-            print_error "Terraform destroy failed"
-            exit 1
-        fi
-        print_success "Infrastructure destroyed successfully"
+    terraform init -upgrade
+    terraform apply -target=module.networking -target=module.security $apply_args
+    
+    print_success "Network infrastructure deployed"
+    
+    # Stage 2: Compute Infrastructure
+    print_info "📦 Stage 2: Deploying compute infrastructure (EC2 instance with DCV setup)..."
+    
+    terraform apply -target=module.compute $apply_args
+    
+    # Get instance details
+    INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || echo "")
+    PUBLIC_IP=$(terraform output -raw instance_public_ip 2>/dev/null || echo "")
+    
+    if [ -z "$INSTANCE_ID" ] || [ -z "$PUBLIC_IP" ]; then
+        print_error "Failed to get instance details from Terraform"
+        exit 1
+    fi
+    
+    print_success "Instance deployed: $INSTANCE_ID"
+    print_success "Public IP: $PUBLIC_IP"
+    
+    # Stage 3: Wait for Instance
+    print_info "📦 Stage 3: Waiting for instance to be ready..."
+    
+    # Wait for instance to be ready
+    if wait_for_instance "$INSTANCE_ID"; then
+        print_success "✅ Instance is ready!"
     else
-        if ! terraform apply $apply_args tfplan; then
-            print_error "Terraform apply failed"
-            exit 1
+        print_warning "⚠️ Instance might still be starting up"
+    fi
+    
+    # Stage 4: Deploy Monitoring
+    print_info "📦 Stage 4: Deploying monitoring infrastructure..."
+    
+    terraform apply $apply_args
+    
+    print_success "Full infrastructure deployed"
+    
+    # Stage 5: Setup DCV
+    print_info "📦 Stage 5: Setting up NICE DCV..."
+    
+    # Get the DCV setup script path
+    DCV_SCRIPT_PATH="$PROJECT_ROOT/scripts/dcv/setup_dcv.sh"
+    
+    if [[ -f "$DCV_SCRIPT_PATH" ]]; then
+        print_info "Running DCV setup script..."
+        if bash "$DCV_SCRIPT_PATH" deploy-upload "$INSTANCE_ID"; then
+            print_success "✅ DCV setup completed!"
+        else
+            print_warning "⚠️ DCV setup encountered issues, but continuing..."
         fi
-        print_success "Infrastructure deployed successfully"
+    else
+        print_warning "⚠️ DCV setup script not found at: $DCV_SCRIPT_PATH"
+        print_info "Skipping DCV setup..."
+    fi
+    
+    # Stage 6: Verify DCV Connectivity
+    if [[ "$SKIP_DCV_CHECK" != true ]]; then
+        print_info "📦 Stage 6: Verifying DCV connectivity..."
+        
+        # Wait a bit for DCV to fully start
+        print_info "Waiting 30 seconds for DCV services to fully initialize..."
+        sleep 30
+        
+        if test_dcv_connectivity "$PUBLIC_IP"; then
+            print_success "✅ DCV is accessible!"
+        else
+            print_warning "⚠️ DCV might still be starting. Try accessing it manually in a few minutes."
+        fi
     fi
 }
 
-# Function to show outputs
-show_outputs() {
-    if [[ "$DESTROY" == true ]] || [[ "$PLAN_ONLY" == true ]]; then
-        return
+# Function to retrieve Windows Administrator password
+get_admin_password() {
+    cd "$TERRAFORM_DIR"
+    
+    print_info "🔑 Retrieving Windows Administrator password..."
+    
+    # Check if terraform is initialized
+    if [[ ! -d ".terraform" ]]; then
+        print_error "Terraform not initialized. Please run deployment first."
+        exit 1
     fi
     
-    print_status "Retrieving deployment outputs..."
+    # Get the password
+    ADMIN_PASSWORD=$(terraform output -raw windows_admin_password 2>/dev/null || echo "")
     
-    local env_dir="$ENVIRONMENTS_DIR/$ENVIRONMENT"
-    cd "$env_dir"
-    
-    terraform output
-}
-
-# Function to show deployment summary
-show_deployment_summary() {
-    if [[ "$DESTROY" == true ]] || [[ "$PLAN_ONLY" == true ]]; then
-        return
+    if [[ -n "$ADMIN_PASSWORD" ]]; then
+        print_success "✅ Admin password retrieved successfully!"
+        echo ""
+        print_info "🔐 Windows Administrator Credentials:"
+        echo "  - Username: Administrator"
+        echo "  - Password: $ADMIN_PASSWORD"
+        echo ""
+        print_info "📱 Connection Information:"
+        
+        # Get instance details
+        INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || echo "N/A")
+        PUBLIC_IP=$(terraform output -raw instance_public_ip 2>/dev/null || echo "N/A")
+        
+        echo "  - Instance ID: $INSTANCE_ID"
+        echo "  - Public IP: $PUBLIC_IP"
+        echo "  - RDP: $PUBLIC_IP:3389"
+        echo "  - DCV: https://$PUBLIC_IP:8443"
+        echo ""
+    else
+        print_error "❌ Could not retrieve admin password"
+        print_info "   This might happen if:"
+        echo "     - Infrastructure hasn't been deployed yet"
+        echo "     - Terraform state is corrupted"
+        echo "     - Output variable is not properly configured"
+        echo ""
+        print_info "   Try running: terraform output windows_admin_password"
+        exit 1
     fi
-    
-    print_status "Deployment Summary:"
-    echo "===================="
-    echo "Environment: $ENVIRONMENT"
-    echo "Region: $(terraform output -raw aws_region 2>/dev/null || echo 'N/A')"
-    echo "Instance IP: $(terraform output -raw instance_public_ip 2>/dev/null || echo 'N/A')"
-    echo "Dashboard URL: $(terraform output -raw dashboard_url 2>/dev/null || echo 'N/A')"
-    echo ""
-    print_warning "Remember to:"
-    echo "1. Update security groups with your IP address"
-    echo "2. Configure RDP access if needed"
-    echo "3. Monitor costs in AWS Console"
 }
 
 # Parse command line arguments
+DESTROY=false
+GET_PASSWORD=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
@@ -235,72 +460,104 @@ while [[ $# -gt 0 ]]; do
             ;;
         -e|--environment)
             ENVIRONMENT="$2"
+            TERRAFORM_DIR="$ENVIRONMENTS_DIR/$ENVIRONMENT"
             shift 2
             ;;
         -a|--auto-approve)
             AUTO_APPROVE=true
             shift
             ;;
-        -p|--plan-only)
-            PLAN_ONLY=true
+        --skip-dcv-check)
+            SKIP_DCV_CHECK=true
             shift
             ;;
         -d|--destroy)
             DESTROY=true
             shift
             ;;
-        -b|--backend-config)
-            BACKEND_CONFIG="$2"
-            shift 2
-            ;;
-        -v|--validate)
-            validate_environment "$ENVIRONMENT"
-            check_prerequisites
-            init_terraform
-            validate_terraform
-            exit 0
+        -p|--password)
+            GET_PASSWORD=true
+            shift
             ;;
         *)
-            ENVIRONMENT="$1"
-            shift
+            print_error "Unknown option: $1"
+            show_usage
+            exit 1
             ;;
     esac
 done
 
 # Main execution
 main() {
-    print_status "Starting Unreal Engine 5 infrastructure deployment"
-    print_status "Environment: $ENVIRONMENT"
-    print_status "Project root: $PROJECT_ROOT"
-    
-    # Validate environment
-    validate_environment "$ENVIRONMENT"
+    print_info "🚀 Starting infrastructure deployment with NiceDCV"
+    print_info "Environment: $ENVIRONMENT"
     
     # Check prerequisites
     check_prerequisites
     
-    # Initialize Terraform first (required before validation)
-    init_terraform
-    
-    # Validate Terraform configuration
-    validate_terraform
-    
-    if [[ "$PLAN_ONLY" == true ]]; then
-        plan_terraform
-        print_success "Plan completed. Review the plan above."
-        exit 0
+    if [[ "$GET_PASSWORD" == true ]]; then
+        # Just retrieve password
+        get_admin_password
+    elif [[ "$DESTROY" == true ]]; then
+        cd "$TERRAFORM_DIR"
+        local destroy_args=""
+        if [[ "$AUTO_APPROVE" == true ]]; then
+            destroy_args="-auto-approve"
+        fi
+        terraform destroy $destroy_args
+        print_success "Infrastructure destroyed"
+    else
+        # Deploy infrastructure
+        deploy_infrastructure
+        
+        # Display connection information
+        cd "$TERRAFORM_DIR"
+        print_success "✅ Deployment complete!"
+        
+        INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || echo "")
+        PUBLIC_IP=$(terraform output -raw instance_public_ip 2>/dev/null || echo "")
+        
+        print_info "═══════════════════════════════════════════════════════════════"
+        print_info "Connection Information:"
+        print_info "═══════════════════════════════════════════════════════════════"
+        echo ""
+        print_success "Instance ID: $INSTANCE_ID"
+        print_success "Public IP: $PUBLIC_IP"
+        echo ""
+        
+        # Get and display admin password
+        print_info "🔑 Retrieving Windows Administrator password..."
+        ADMIN_PASSWORD=$(terraform output -raw windows_admin_password 2>/dev/null || echo "PASSWORD_NOT_AVAILABLE")
+        
+        if [[ "$ADMIN_PASSWORD" != "PASSWORD_NOT_AVAILABLE" ]]; then
+            print_success "✅ Admin password retrieved successfully!"
+            echo ""
+            print_info "🔐 Windows Administrator Credentials:"
+            echo "  - Username: Administrator"
+            echo "  - Password: $ADMIN_PASSWORD"
+            echo ""
+        else
+            print_warning "⚠️ Could not retrieve admin password automatically"
+            print_info "   You can get it manually with: terraform output windows_admin_password"
+            echo ""
+        fi
+        
+        print_info "🖥️ NICE DCV (High-performance remote desktop):"
+        echo "  - URL: https://$PUBLIC_IP:8443"
+        echo "  - Session: ue5-session"
+        echo "  - Username: Administrator"
+        echo "  - Note: Accept the self-signed certificate warning"
+        echo ""
+        print_info "📱 Remote Desktop (RDP) - Alternative:"
+        echo "  - Address: $PUBLIC_IP:3389"
+        echo "  - Username: Administrator"
+        echo ""
+        print_info "📝 Note: DCV setup has been completed via SSM."
+        print_info "    All services should be ready for use."
+        echo ""
+        print_info "═══════════════════════════════════════════════════════════════"
     fi
-    
-    # Plan and apply
-    plan_terraform
-    apply_terraform
-    
-    # Show outputs and summary
-    show_outputs
-    show_deployment_summary
-    
-    print_success "Deployment completed successfully!"
 }
 
 # Run main function
-main "$@" 
+main "$@"

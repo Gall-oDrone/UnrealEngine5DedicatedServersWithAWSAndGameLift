@@ -319,12 +319,14 @@ execute_openssl_build() {
     
     # Default parameters for OpenSSL build
     local openssl_repo_path="C:\\OpenSSL"
+    local openssl_version="1.1.1"
     local build_type="Release"
     local architecture="x64"
     local install_path="C:\\OpenSSL-Install"
     
     print_info "Build Parameters:"
     print_info "  Repository Path: $openssl_repo_path"
+    print_info "  OpenSSL Version: $openssl_version"
     print_info "  Build Type: $build_type"
     print_info "  Architecture: $architecture"
     print_info "  Install Path: $install_path"
@@ -335,7 +337,7 @@ execute_openssl_build() {
     local command_id=$(aws ssm send-command \
         --instance-ids "$instance_id" \
         --document-name "$DOCUMENT_NAME" \
-        --parameters "opensslRepoPath=$openssl_repo_path,buildType=$build_type,architecture=$architecture,installPath=$install_path,region=$REGION" \
+        --parameters "opensslRepoPath=$openssl_repo_path,opensslVersion=$openssl_version,buildType=$build_type,architecture=$architecture,installPath=$install_path,region=$REGION" \
         --region "$REGION" \
         --timeout-seconds 3600 \
         --output text \
