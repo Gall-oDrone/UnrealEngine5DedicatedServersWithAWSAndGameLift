@@ -16,6 +16,7 @@ This directory contains scripts and AWS Systems Manager (SSM) documents for auto
 - `ssm_doc_download_cmake.json` - Individual CMake installer document
 - `ssm_doc_download_git.json` - Individual Git for Windows installer document
 - `ssm_doc_download_nasm.json` - Individual NASM installer document
+- `ssm_doc_download_nvidia_grid.json` - Individual NVIDIA GRID driver installer document
 - `ssm_doc_download_python_manager.json` - Individual Python Manager installer document
 - `ssm_doc_download_strawberry_perl.json` - Individual Strawberry Perl installer document
 - `ssm_doc_download_visual_studio_2022.json` - Individual Visual Studio 2022 installer document
@@ -29,6 +30,7 @@ The installer system supports the following software packages:
 | **CMake** | 4.1.1 | Build system generator |
 | **Git for Windows** | 2.51.0 | Version control system |
 | **NASM** | 2.16.03 | Netwide Assembler for assembly code |
+| **NVIDIA GRID Driver** | Latest | GPU drivers for visualization workloads |
 | **Python Manager** | 25.0b14 | Python package management |
 | **Strawberry Perl** | 5.40.2.1 | Perl interpreter for build scripts |
 | **Visual Studio 2022** | 17.14.15 | C++ development environment |
@@ -41,6 +43,7 @@ The installer system follows a structured approach:
 - Creates organized folder structure in S3
 - Downloads installers from official sources
 - Uploads installers to S3 with proper organization
+- **Note**: NVIDIA GRID driver downloads directly from AWS S3 bucket
 
 ### Step 2: SSM Document Registration
 - Registers SSM documents in AWS Systems Manager
@@ -49,6 +52,7 @@ The installer system follows a structured approach:
 
 ### Step 3: Software Installation
 - Downloads installers from S3 to Windows instances
+- Downloads NVIDIA GRID driver from AWS S3 bucket
 - Executes installation with proper parameters
 - Monitors installation progress and handles errors
 
@@ -152,6 +156,8 @@ installers-bucket/
             └── VisualStudioSetup.exe
 ```
 
+**Note**: NVIDIA GRID driver is downloaded directly from the AWS S3 bucket `ec2-windows-nvidia-drivers` and does not require the local S3 bucket setup.
+
 ## Prerequisites
 
 ### Local Machine
@@ -167,7 +173,7 @@ installers-bucket/
 - **Administrator privileges** for software installation
 
 ### AWS Permissions
-- **S3** read access to installer bucket
+- **S3** read access to installer bucket and AWS NVIDIA drivers bucket
 - **SSM** document registration and execution permissions
 - **EC2** instance management permissions
 
@@ -180,6 +186,7 @@ Software is installed to the following locations on Windows instances:
 | CMake | `C:\Program Files\CMake\` |
 | Git | `C:\Program Files\Git\` |
 | NASM | `C:\Program Files\NASM\` |
+| NVIDIA GRID Driver | `C:\Users\Public\Desktop\NVIDIA\` (download location) |
 | Python Manager | `C:\Program Files\Python Manager\` |
 | Strawberry Perl | `C:\Strawberry\` |
 | Visual Studio 2022 | `C:\Program Files\Microsoft Visual Studio\` |
@@ -227,6 +234,12 @@ Software is installed to the following locations on Windows instances:
    - Check AWS CLI permissions
    - Ensure document names are unique
 
+5. **NVIDIA GRID Driver Issues**
+   - Verify instance has compatible GPU (G3, G4dn, G5, G6, etc.)
+   - Check AWS S3 bucket access permissions for `ec2-windows-nvidia-drivers`
+   - Ensure Windows instance has sufficient disk space for driver files
+   - Verify driver files downloaded to `C:\Users\Public\Desktop\NVIDIA\`
+
 ### Debug Commands
 
 ```bash
@@ -238,6 +251,9 @@ aws s3api head-object --bucket "$S3_ACCESS_POINT_ARN" --key "CMake/Windows x86_6
 
 # Check SSM agent status
 aws ssm describe-instance-information --filters "Key=InstanceIds,Values=i-0abc123def456789"
+
+# Check NVIDIA GRID driver download status
+aws ssm send-command --instance-ids "i-0abc123def456789" --document-name "AWS-RunPowerShellScript" --parameters 'commands=["if (Test-Path \"C:\\Users\\Public\\Desktop\\NVIDIA\") { Get-ChildItem \"C:\\Users\\Public\\Desktop\\NVIDIA\" | Select-Object Name, Length, CreationTime } else { Write-Host \"NVIDIA folder not found\" }"]'
 ```
 
 ## Integration with Unreal Engine
@@ -248,8 +264,44 @@ This installer system is designed to prepare Windows EC2 instances for Unreal En
 - **Version Control**: Git for source code management
 - **Scripting**: Perl and Python for build automation
 - **Assembler**: NASM for low-level code compilation
+- **GPU Drivers**: NVIDIA GRID drivers for GPU-accelerated workloads
 
-The installed software provides the complete development environment needed for compiling Unreal Engine 5 dedicated servers.
+The installed software provides the complete development environment needed for compiling Unreal Engine 5 dedicated servers, including GPU support for visualization and compute workloads.
+
+## NVIDIA GRID Driver Details
+
+The NVIDIA GRID driver installer provides GPU support for Windows EC2 instances with NVIDIA GPUs. This is particularly useful for:
+
+### Supported Instance Types
+- **G3**: M60 GPU instances
+- **G4dn**: T4 GPU instances  
+- **G5**: A10 GPU instances
+- **G6**: L4 GPU instances
+- **G6e**: L40S GPU instances
+- **G6f**: L4 GPU instances (GRID only)
+- **Gr6**: L4 GPU instances
+- **Gr6f**: L4 GPU instances (GRID only)
+
+### Driver Features
+- **Professional Visualization**: Optimized for 3D rendering and video processing
+- **Quadro Virtual Workstations**: Support for up to 4 4K displays per GPU
+- **GRID vApps**: Remote Desktop Session Host (RDSH) capabilities
+- **CUDA Support**: Full CUDA toolkit compatibility for compute workloads
+
+### Installation Process
+1. Downloads latest NVIDIA GRID driver from AWS S3 bucket `ec2-windows-nvidia-drivers`
+2. Saves driver files to `C:\Users\Public\Desktop\NVIDIA\`
+3. Requires manual installation after download
+4. Supports both Tesla and GRID driver modes
+
+### Post-Installation
+After the driver files are downloaded, you'll need to:
+1. Navigate to the NVIDIA folder on the desktop
+2. Run the appropriate installer for your Windows version
+3. Follow the installation wizard
+4. Reboot the instance as required
+
+For more information, see the [AWS NVIDIA Driver Documentation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/install-nvidia-driver.html#nvidia-GRID-driver).
 
 ## Security Considerations
 

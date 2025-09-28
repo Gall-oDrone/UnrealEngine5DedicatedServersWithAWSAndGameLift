@@ -49,6 +49,7 @@ declare -a SOFTWARE_KEYS=(
     "Python Manager/Windows x86_64/Version 25.0b14/python-manager-25.0b14.msi"
     "Strawberry Perl/Windows x86_64/Version 5.40.2.1/strawberry-perl-5.40.2.1-64bit.msi"
     "Visual Studio 2022/Visual Studio 2022 v17.14.15/Community Edition/VisualStudioSetup.exe"
+    "NVIDIA GRID Driver (from AWS S3 bucket)"
 )
 
 declare -a SOFTWARE_NAMES=(
@@ -58,6 +59,7 @@ declare -a SOFTWARE_NAMES=(
     "Python Manager"
     "Strawberry Perl"
     "Visual Studio 2022 Community"
+    "NVIDIA GRID Driver"
 )
 
 declare -a SOFTWARE_DESTINATIONS=(
@@ -67,6 +69,7 @@ declare -a SOFTWARE_DESTINATIONS=(
     "C:/downloads/python"
     "C:/downloads/perl"
     "C:/downloads/visualstudio"
+    "C:/Users/Public/Desktop/NVIDIA"
 )
 
 # Individual installer configuration (for separate SSM documents approach)
@@ -78,6 +81,7 @@ declare -a INSTALLER_ORDER=(
     "python_manager"
     "strawberry_perl"
     "visual_studio_2022"
+    "nvidia_grid"
 )
 
 # Installer configurations using associative arrays
@@ -117,6 +121,12 @@ declare -A INSTALLER_CONFIGS=(
     ["visual_studio_2022_destination"]="C:/downloads/visualstudio"
     ["visual_studio_2022_doc_name"]="DownloadVisualStudio2022"
     ["visual_studio_2022_doc_file"]="ssm_doc_download_visual_studio_2022.json"
+    
+    ["nvidia_grid_name"]="NVIDIA GRID Driver"
+    ["nvidia_grid_key"]="NVIDIA GRID Driver (from AWS S3 bucket)"
+    ["nvidia_grid_destination"]="C:/Users/Public/Desktop/NVIDIA"
+    ["nvidia_grid_doc_name"]="DownloadNvidiaGrid"
+    ["nvidia_grid_doc_file"]="ssm_doc_download_nvidia_grid.json"
 )
 
 # Function to ensure logs directory exists
@@ -806,6 +816,7 @@ check_download_status() {
             "if (Test-Path \"C:\\downloads\\python\\python-manager-25.0b14.msi\") { $downloads += \"Python Manager\" }",
             "if (Test-Path \"C:\\downloads\\perl\\strawberry-perl-5.40.2.1-64bit.msi\") { $downloads += \"Strawberry Perl\" }",
             "if (Test-Path \"C:\\downloads\\visualstudio\\VisualStudioSetup.exe\") { $downloads += \"Visual Studio 2022\" }",
+            "if (Test-Path \"C:\\Users\\Public\\Desktop\\NVIDIA\") { $nvidiaFiles = Get-ChildItem \"C:\\Users\\Public\\Desktop\\NVIDIA\" -ErrorAction SilentlyContinue; if ($nvidiaFiles) { $downloads += \"NVIDIA GRID Driver\" } }",
             "if ($downloads.Count -eq 0) { \"No files downloaded\" } else { \"Downloaded: \" + ($downloads -join \", \") }"
         ]' \
         --region "$AWS_REGION" \
@@ -899,21 +910,37 @@ execute_installer() {
     
     print_info "📦 Installing $name..."
     
-    # Execute SSM document
-    local command_id=$(aws ssm send-command \
-        --instance-ids "$instance_id" \
-        --document-name "$doc_name" \
-        --parameters "{
-            \"s3BucketArn\": [\"$S3_ACCESS_POINT_ARN\"],
-            \"softwareKey\": [\"$s3_key\"],
-            \"softwareName\": [\"$name\"],
-            \"downloadPath\": [\"$destination\"],
-            \"region\": [\"$AWS_REGION\"]
-        }" \
-        --timeout-seconds 1800 \
-        --region "$AWS_REGION" \
-        --output text \
-        --query 'Command.CommandId' 2>/dev/null)
+    # Execute SSM document with different parameters based on installer type
+    local command_id
+    if [[ "$installer" == "nvidia_grid" ]]; then
+        # NVIDIA GRID driver uses different parameters (no S3 bucket ARN)
+        command_id=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "$doc_name" \
+            --parameters "{
+                \"region\": [\"$AWS_REGION\"]
+            }" \
+            --timeout-seconds 1800 \
+            --region "$AWS_REGION" \
+            --output text \
+            --query 'Command.CommandId' 2>/dev/null)
+    else
+        # Standard installers use S3 bucket ARN
+        command_id=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "$doc_name" \
+            --parameters "{
+                \"s3BucketArn\": [\"$S3_ACCESS_POINT_ARN\"],
+                \"softwareKey\": [\"$s3_key\"],
+                \"softwareName\": [\"$name\"],
+                \"downloadPath\": [\"$destination\"],
+                \"region\": [\"$AWS_REGION\"]
+            }" \
+            --timeout-seconds 1800 \
+            --region "$AWS_REGION" \
+            --output text \
+            --query 'Command.CommandId' 2>/dev/null)
+    fi
     
     if [[ -z "$command_id" ]]; then
         print_error "Failed to send command for $name"
@@ -1353,6 +1380,12 @@ main() {
         for installer in "${INSTALLER_ORDER[@]}"; do
             local name="${INSTALLER_CONFIGS[${installer}_name]}"
             local s3_key="${INSTALLER_CONFIGS[${installer}_key]}"
+            
+            # Skip S3 validation for NVIDIA GRID driver (uses different S3 bucket)
+            if [[ "$installer" == "nvidia_grid" ]]; then
+                print_progress "Skipping S3 validation for $name (uses AWS NVIDIA S3 bucket)"
+                continue
+            fi
             
             if ! validate_s3_object "$s3_key" "$name"; then
                 validation_failed=true
