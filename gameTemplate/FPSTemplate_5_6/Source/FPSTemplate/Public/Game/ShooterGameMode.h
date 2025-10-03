@@ -221,7 +221,7 @@ private:
 
     // GameLift callbacks
 #if WITH_GAMELIFT
-    void HandleGameSessionStart(const Aws::GameLift::Server::Model::GameSession& GameSession);
+    void HandleGameSessionStart(const Aws::GameLift::Server::Model::GameSession& InGameSession);
     void HandleProcessTerminate();
     void HandleGameSessionUpdate(const Aws::GameLift::Server::Model::UpdateGameSession& UpdateGameSession);
 #endif
