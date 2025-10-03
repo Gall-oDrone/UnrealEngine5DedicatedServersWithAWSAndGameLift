@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Game/ShooterGameModeBase.h"
-#include "TimeManager.h"
+#include "TimerManager.h"
 #include "ShooterGameMode.generated.h"
 
 #if WITH_GAMELIFT
