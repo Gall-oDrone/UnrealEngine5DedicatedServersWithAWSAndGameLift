@@ -24,8 +24,6 @@ DEFINE_LOG_CATEGORY(GameServerLog);
 
 // Constructor
 AShooterGameMode::AShooterGameMode() :
-    ProcessParameters(nullptr),
-    GameLiftModule(nullptr),
     ServerState(EGameLiftServerState::Uninitialized),
     bIsGameLiftInitialized(false),
     bIsGameSessionActive(false),
@@ -37,6 +35,10 @@ AShooterGameMode::AShooterGameMode() :
     TickTimeAccumulator(0.0f),
     TickCounter(0),
     ConsecutiveInitFailures(0)
+#if WITH_GAMELIFT
+    , ProcessParameters(nullptr)
+    , GameLiftModule(nullptr)
+#endif
 {
     // Set default pawn class
     static ConstructorHelpers::FClassFinder<APawn> PlayerPawnBPClass(TEXT("/Game/ThirdPerson/Blueprints/BP_ThirdPersonCharacter"));
@@ -149,6 +151,7 @@ void AShooterGameMode::InitGameLift()
 #endif
 }
 
+#if WITH_GAMELIFT
 void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
 {
 #if WITH_GAMELIFT
@@ -235,7 +238,9 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
     }
 #endif
 }
+#endif
 
+#if WITH_GAMELIFT
 void AShooterGameMode::SetupGameLiftCallbacks()
 {
 #if WITH_GAMELIFT
@@ -271,6 +276,7 @@ void AShooterGameMode::SetupGameLiftCallbacks()
     UE_LOG(GameServerLog, Log, TEXT("GameLift callbacks configured"));
 #endif
 }
+#endif
 
 void AShooterGameMode::ParseCommandLineArguments()
 {
@@ -299,6 +305,7 @@ void AShooterGameMode::ParseCommandLineArguments()
         ServerConfig.ServerPort, MaxPlayers);
 }
 
+#if WITH_GAMELIFT
 void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutParams)
 {
 #if WITH_GAMELIFT
@@ -374,7 +381,9 @@ void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutPar
     }
 #endif
 }
+#endif
 
+#if WITH_GAMELIFT
 bool AShooterGameMode::ValidateServerConfiguration()
 {
     bool bIsValid = true;
@@ -402,6 +411,7 @@ bool AShooterGameMode::ValidateServerConfiguration()
 
     return bIsValid;
 }
+#endif
 
 // State Management
 void AShooterGameMode::TransitionToState(EGameLiftServerState NewState)
@@ -504,6 +514,7 @@ void AShooterGameMode::HandleStateTransition(EGameLiftServerState OldState, EGam
 }
 
 // GameLift Callbacks
+#if WITH_GAMELIFT
 void AShooterGameMode::HandleGameSessionStart(const Aws::GameLift::Server::Model::GameSession& GameSession)
 {
 #if WITH_GAMELIFT
@@ -575,7 +586,9 @@ void AShooterGameMode::HandleGameSessionStart(const Aws::GameLift::Server::Model
     }
 #endif
 }
+#endif
 
+#if WITH_GAMELIFT
 void AShooterGameMode::HandleProcessTerminate()
 {
 #if WITH_GAMELIFT
@@ -612,7 +625,9 @@ void AShooterGameMode::HandleProcessTerminate()
     TransitionToState(EGameLiftServerState::Shutdown);
 #endif
 }
+#endif
 
+#if WITH_GAMELIFT
 bool AShooterGameMode::HandleHealthCheck()
 {
     FScopeLock Lock(&StateLock);
@@ -673,7 +688,9 @@ bool AShooterGameMode::HandleHealthCheck()
 
     return bIsHealthy;
 }
+#endif
 
+#if WITH_GAMELIFT
 void AShooterGameMode::HandleGameSessionUpdate(const Aws::GameLift::Server::Model::UpdateGameSession& UpdateGameSession)
 {
 #if WITH_GAMELIFT
@@ -693,11 +710,14 @@ void AShooterGameMode::HandleGameSessionUpdate(const Aws::GameLift::Server::Mode
     }
 #endif
 }
+#endif
 
 // Health Monitoring
 void AShooterGameMode::PerformHealthCheck()
 {
+#if WITH_GAMELIFT
     HandleHealthCheck();
+#endif
 }
 
 void AShooterGameMode::UpdateServerStatistics()

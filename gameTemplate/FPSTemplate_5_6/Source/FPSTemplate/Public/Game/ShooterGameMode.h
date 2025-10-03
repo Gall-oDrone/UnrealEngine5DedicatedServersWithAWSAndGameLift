@@ -7,12 +7,18 @@
 #include "TimeManager.h"
 #include "ShooterGameMode.generated.h"
 
+#if WITH_GAMELIFT
+#include "GameLiftServerSDK.h"
+#include "GameLiftServerSDKModels.h"
+#endif
+
 struct FProcessParameters;
 namespace Aws {
     namespace GameLift {
         namespace Server {
             namespace Model {
                 class GameSession;
+                class UpdateGameSession;
             }
         }
     }
@@ -199,12 +205,14 @@ protected:
 
 private:
     // GameLift initialization
+#if WITH_GAMELIFT
     void InitGameLift();
     void InitGameLiftWithRetry(int32 AttemptNumber = 0);
     void SetupGameLiftCallbacks();
-    void ParseCommandLineArguments();
     void ParseGameLiftAnywhereParameters(struct FServerParameters& OutParams);
     bool ValidateServerConfiguration();
+#endif
+    void ParseCommandLineArguments();
 
     // State management
     void TransitionToState(EGameLiftServerState NewState);
@@ -212,10 +220,12 @@ private:
     void HandleStateTransition(EGameLiftServerState OldState, EGameLiftServerState NewState);
 
     // GameLift callbacks
+#if WITH_GAMELIFT
     void HandleGameSessionStart(const Aws::GameLift::Server::Model::GameSession& GameSession);
     void HandleProcessTerminate();
     bool HandleHealthCheck();
     void HandleGameSessionUpdate(const Aws::GameLift::Server::Model::UpdateGameSession& UpdateGameSession);
+#endif
 
     // Health monitoring
     void PerformHealthCheck();
@@ -261,8 +271,10 @@ private:
     TArray<float> RecentTickRates;
 
     // GameLift SDK
+#if WITH_GAMELIFT
     TSharedPtr<FProcessParameters> ProcessParameters;
     class FGameLiftServerSDKModule* GameLiftModule;
+#endif
 
     // Error tracking
     FString LastErrorMessage;
