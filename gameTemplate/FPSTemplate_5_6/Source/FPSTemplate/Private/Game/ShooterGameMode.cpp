@@ -60,7 +60,9 @@ void AShooterGameMode::BeginPlay()
     Super::BeginPlay();
 
     // Initialize server statistics
+#if WITH_GAMELIFT
     ServerStats.ServerStartTime = FDateTime::Now();
+#endif
     LastTickTime = GetWorld()->GetTimeSeconds();
 
 #if WITH_GAMELIFT
@@ -98,6 +100,24 @@ void AShooterGameMode::BeginPlay()
     );
 #else
     UE_LOG(GameServerLog, Warning, TEXT("GameLift support not compiled. Running in standalone mode."));
+    
+    // Setup basic health check timer when GameLift is not available
+    GetWorldTimerManager().SetTimer(
+        HealthCheckTimerHandle,
+        this,
+        &AShooterGameMode::PerformHealthCheck,
+        60.0f, // Default health check interval
+        true
+    );
+    
+    // Setup basic statistics update timer when GameLift is not available
+    GetWorldTimerManager().SetTimer(
+        StatisticsUpdateTimerHandle,
+        this,
+        &AShooterGameMode::UpdateServerStatistics,
+        1.0f, // Update every second
+        true
+    );
 #endif
 }
 
@@ -106,10 +126,10 @@ void AShooterGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     UE_LOG(GameServerLog, Log, TEXT("GameMode EndPlay called. Reason: %d"), (int32)EndPlayReason);
 
-#if WITH_GAMELIFT
     // Clear all timers
     GetWorldTimerManager().ClearTimer(HealthCheckTimerHandle);
     GetWorldTimerManager().ClearTimer(StatisticsUpdateTimerHandle);
+#if WITH_GAMELIFT
     GetWorldTimerManager().ClearTimer(RetryInitTimerHandle);
 
     // Perform cleanup
@@ -627,13 +647,13 @@ void AShooterGameMode::HandleProcessTerminate()
 }
 #endif
 
-#if WITH_GAMELIFT
 bool AShooterGameMode::HandleHealthCheck()
 {
-    FScopeLock Lock(&StateLock);
-
     bool bIsHealthy = true;
     FString HealthDetails;
+
+#if WITH_GAMELIFT
+    FScopeLock Lock(&StateLock);
 
     // Don't report healthy during error or shutdown states
     if (ServerState == EGameLiftServerState::Error ||
@@ -644,6 +664,7 @@ bool AShooterGameMode::HandleHealthCheck()
         HealthDetails = TEXT("Server in unhealthy state");
     }
     else
+#endif
     {
         // Check memory health
         if (!CheckMemoryHealth())
@@ -667,6 +688,7 @@ bool AShooterGameMode::HandleHealthCheck()
         }
     }
 
+#if WITH_GAMELIFT
     // Update statistics
     ServerStats.LastHealthCheckTime = FDateTime::Now();
     if (!bIsHealthy)
@@ -685,10 +707,20 @@ bool AShooterGameMode::HandleHealthCheck()
 
     // Broadcast health check result
     OnHealthCheckPerformed.Broadcast(bIsHealthy, HealthDetails);
+#else
+    // Simple logging when GameLift is not available
+    if (!bIsHealthy)
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("Health check failed: %s"), *HealthDetails);
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Verbose, TEXT("Health check passed"));
+    }
+#endif
 
     return bIsHealthy;
 }
-#endif
 
 #if WITH_GAMELIFT
 void AShooterGameMode::HandleGameSessionUpdate(const Aws::GameLift::Server::Model::UpdateGameSession& UpdateGameSession)
@@ -715,9 +747,7 @@ void AShooterGameMode::HandleGameSessionUpdate(const Aws::GameLift::Server::Mode
 // Health Monitoring
 void AShooterGameMode::PerformHealthCheck()
 {
-#if WITH_GAMELIFT
     HandleHealthCheck();
-#endif
 }
 
 void AShooterGameMode::UpdateServerStatistics()
@@ -734,6 +764,7 @@ void AShooterGameMode::UpdateServerStatistics()
             RecentTickRates.RemoveAt(0);
         }
 
+#if WITH_GAMELIFT
         // Calculate average tick rate
         float TotalTickRate = 0.0f;
         for (float Rate : RecentTickRates)
@@ -741,12 +772,14 @@ void AShooterGameMode::UpdateServerStatistics()
             TotalTickRate += Rate;
         }
         ServerStats.AverageTickRate = TotalTickRate / RecentTickRates.Num();
+#endif
 
         // Reset counters
         TickTimeAccumulator = 0.0f;
         TickCounter = 0;
     }
 
+#if WITH_GAMELIFT
     // Update memory usage
     const FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
     ServerStats.CurrentMemoryUsagePercent = (float)(MemStats.UsedPhysical) / (float)(MemStats.TotalPhysical) * 100.0f;
@@ -755,6 +788,7 @@ void AShooterGameMode::UpdateServerStatistics()
     RecordHealthMetric(TEXT("TickRate"), ServerStats.AverageTickRate);
     RecordHealthMetric(TEXT("MemoryUsage"), ServerStats.CurrentMemoryUsagePercent);
     RecordHealthMetric(TEXT("PlayerCount"), CurrentPlayerCount);
+#endif
 }
 
 bool AShooterGameMode::CheckMemoryHealth()
@@ -762,12 +796,23 @@ bool AShooterGameMode::CheckMemoryHealth()
     const FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
     float MemoryUsagePercent = (float)(MemStats.UsedPhysical) / (float)(MemStats.TotalPhysical) * 100.0f;
 
+#if WITH_GAMELIFT
     if (MemoryUsagePercent > ServerConfig.MaxMemoryUsagePercent)
     {
         UE_LOG(GameServerLog, Warning, TEXT("High memory usage: %.2f%% (threshold: %.2f%%)"),
             MemoryUsagePercent, ServerConfig.MaxMemoryUsagePercent);
         return false;
     }
+#else
+    // Default threshold when GameLift is not available
+    const float DefaultMaxMemoryUsagePercent = 90.0f;
+    if (MemoryUsagePercent > DefaultMaxMemoryUsagePercent)
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("High memory usage: %.2f%% (threshold: %.2f%%)"),
+            MemoryUsagePercent, DefaultMaxMemoryUsagePercent);
+        return false;
+    }
+#endif
 
     return true;
 }
@@ -777,23 +822,39 @@ bool AShooterGameMode::CheckGameLoopHealth()
     float CurrentTime = GetWorld()->GetTimeSeconds();
     float TimeSinceLastTick = CurrentTime - LastTickTime;
 
+#if WITH_GAMELIFT
     if (TimeSinceLastTick > ServerConfig.MaxGameLoopStallSeconds)
     {
         UE_LOG(GameServerLog, Warning, TEXT("Game loop stall detected: %.2f seconds since last tick"),
             TimeSinceLastTick);
         return false;
     }
+#else
+    // Default threshold when GameLift is not available
+    const float DefaultMaxGameLoopStallSeconds = 5.0f;
+    if (TimeSinceLastTick > DefaultMaxGameLoopStallSeconds)
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("Game loop stall detected: %.2f seconds since last tick"),
+            TimeSinceLastTick);
+        return false;
+    }
+#endif
 
     return true;
 }
 
 void AShooterGameMode::RecordHealthMetric(const FString& MetricName, float Value)
 {
+#if WITH_GAMELIFT
     // This is where you would send metrics to CloudWatch or your monitoring system
     if (ServerConfig.bEnableDetailedLogging)
     {
         UE_LOG(GameServerLog, VeryVerbose, TEXT("Metric: %s = %.2f"), *MetricName, Value);
     }
+#else
+    // Simple logging when GameLift is not available
+    UE_LOG(GameServerLog, VeryVerbose, TEXT("Metric: %s = %.2f"), *MetricName, Value);
+#endif
 }
 
 // Player Management
@@ -847,12 +908,17 @@ APlayerController* AShooterGameMode::Login(UPlayer* NewPlayer, ENetRole InRemote
         {
             PlayerSessions.Add(PlayerSessionId, NewPlayerController);
             CurrentPlayerCount++;
+#if WITH_GAMELIFT
             ServerStats.TotalPlayersConnected++;
 
             UE_LOG(GameServerLog, Log, TEXT("Player joined: %s (Total: %d/%d)"),
                 *PlayerSessionId, CurrentPlayerCount, MaxPlayers);
 
             OnPlayerJoinedSession.Broadcast(PlayerSessionId);
+#else
+            UE_LOG(GameServerLog, Log, TEXT("Player joined: %s (Total: %d)"),
+                *PlayerSessionId, CurrentPlayerCount);
+#endif
         }
     }
 
@@ -882,10 +948,15 @@ void AShooterGameMode::Logout(AController* Exiting)
             RemovePlayerSession(PlayerSessionId);
             CurrentPlayerCount = FMath::Max(0, CurrentPlayerCount - 1);
 
+#if WITH_GAMELIFT
             UE_LOG(GameServerLog, Log, TEXT("Player left: %s (Remaining: %d/%d)"),
                 *PlayerSessionId, CurrentPlayerCount, MaxPlayers);
 
             OnPlayerLeftSession.Broadcast(PlayerSessionId);
+#else
+            UE_LOG(GameServerLog, Log, TEXT("Player left: %s (Remaining: %d)"),
+                *PlayerSessionId, CurrentPlayerCount);
+#endif
         }
     }
 
@@ -1032,7 +1103,9 @@ void AShooterGameMode::CleanupGameSession()
         UE_LOG(GameServerLog, Log, TEXT("Cleaning up game session: %s"), *CurrentGameSessionId);
 
         // Notify blueprints
+#if WITH_GAMELIFT
         OnGameSessionTerminated.Broadcast(TEXT("Session ended"));
+#endif
 
         // Call virtual function
         OnGameSessionEnded(TEXT("Session cleanup"));

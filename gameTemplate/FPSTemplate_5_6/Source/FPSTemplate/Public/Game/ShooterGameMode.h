@@ -223,9 +223,9 @@ private:
 #if WITH_GAMELIFT
     void HandleGameSessionStart(const Aws::GameLift::Server::Model::GameSession& GameSession);
     void HandleProcessTerminate();
-    bool HandleHealthCheck();
     void HandleGameSessionUpdate(const Aws::GameLift::Server::Model::UpdateGameSession& UpdateGameSession);
 #endif
+    bool HandleHealthCheck();
 
     // Health monitoring
     void PerformHealthCheck();
