@@ -174,7 +174,6 @@ void AShooterGameMode::InitGameLift()
 #if WITH_GAMELIFT
 void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
 {
-#if WITH_GAMELIFT
     if (AttemptNumber >= ServerConfig.MaxRetryAttempts)
     {
         UE_LOG(GameServerLog, Error, TEXT("Failed to initialize GameLift after %d attempts"), ServerConfig.MaxRetryAttempts);
@@ -263,7 +262,6 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
 #if WITH_GAMELIFT
 void AShooterGameMode::SetupGameLiftCallbacks()
 {
-#if WITH_GAMELIFT
     if (!ProcessParameters.IsValid())
     {
         ProcessParameters = MakeShared<FProcessParameters>();
@@ -328,7 +326,6 @@ void AShooterGameMode::ParseCommandLineArguments()
 #if WITH_GAMELIFT
 void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutParams)
 {
-#if WITH_GAMELIFT
     UE_LOG(GameServerLog, Log, TEXT("Parsing GameLift Anywhere parameters..."));
 
     // Parse WebSocket URL
@@ -537,7 +534,6 @@ void AShooterGameMode::HandleStateTransition(EGameLiftServerState OldState, EGam
 #if WITH_GAMELIFT
 void AShooterGameMode::HandleGameSessionStart(const Aws::GameLift::Server::Model::GameSession& InGameSession)
 {
-#if WITH_GAMELIFT
     FScopeLock Lock(&SessionLock);
 
     UE_LOG(GameServerLog, Log, TEXT("Received game session activation request"));
@@ -612,7 +608,6 @@ void AShooterGameMode::HandleGameSessionStart(const Aws::GameLift::Server::Model
 #if WITH_GAMELIFT
 void AShooterGameMode::HandleProcessTerminate()
 {
-#if WITH_GAMELIFT
     UE_LOG(GameServerLog, Warning, TEXT("Received termination request from GameLift"));
 
     bIsTerminating = true;
@@ -726,7 +721,6 @@ bool AShooterGameMode::HandleHealthCheck()
 #if WITH_GAMELIFT
 void AShooterGameMode::HandleGameSessionUpdate(const Aws::GameLift::Server::Model::UpdateGameSession& UpdateGameSession)
 {
-#if WITH_GAMELIFT
     UE_LOG(GameServerLog, Log, TEXT("Received game session update"));
 
     // Handle backfill ticket updates
