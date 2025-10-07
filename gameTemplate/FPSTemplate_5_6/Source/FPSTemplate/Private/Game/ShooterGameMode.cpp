@@ -62,10 +62,8 @@ void AShooterGameMode::BeginPlay()
     // Initialize server statistics
 #if WITH_GAMELIFT
     ServerStats.ServerStartTime = FDateTime::Now();
-#endif
     LastTickTime = GetWorld()->GetTimeSeconds();
 
-#if WITH_GAMELIFT
     // Parse command line arguments first
     ParseCommandLineArguments();
 
@@ -152,10 +150,10 @@ void AShooterGameMode::Tick(float DeltaSeconds)
     LastTickTime = GetWorld()->GetTimeSeconds();
 }
 
+#if WITH_GAMELIFT
 // GameLift Initialization
 void AShooterGameMode::InitGameLift()
 {
-#if WITH_GAMELIFT
     UE_LOG(GameServerLog, Log, TEXT("Initializing GameLift integration..."));
 
     // Load the GameLift module
@@ -168,10 +166,8 @@ void AShooterGameMode::InitGameLift()
     }
 
     InitGameLiftWithRetry(0);
-#endif
 }
 
-#if WITH_GAMELIFT
 void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
 {
     if (AttemptNumber >= ServerConfig.MaxRetryAttempts)
@@ -255,11 +251,8 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
             false
         );
     }
-#endif
 }
-#endif
 
-#if WITH_GAMELIFT
 void AShooterGameMode::SetupGameLiftCallbacks()
 {
     if (!ProcessParameters.IsValid())
@@ -292,7 +285,6 @@ void AShooterGameMode::SetupGameLiftCallbacks()
         });
 
     UE_LOG(GameServerLog, Log, TEXT("GameLift callbacks configured"));
-#endif
 }
 #endif
 
@@ -396,11 +388,8 @@ void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutPar
         OutParams.m_sessionToken = TCHAR_TO_UTF8(*SessionToken);
         UE_LOG(GameServerLog, Log, TEXT("Session Token: [REDACTED]"));
     }
-#endif
 }
-#endif
 
-#if WITH_GAMELIFT
 bool AShooterGameMode::ValidateServerConfiguration()
 {
     bool bIsValid = true;
@@ -601,11 +590,8 @@ void AShooterGameMode::HandleGameSessionStart(const Aws::GameLift::Server::Model
         UE_LOG(GameServerLog, Error, TEXT("Failed to activate game session: %s"), *Error.m_errorMessage);
         TransitionToState(EGameLiftServerState::Ready);
     }
-#endif
 }
-#endif
 
-#if WITH_GAMELIFT
 void AShooterGameMode::HandleProcessTerminate()
 {
     UE_LOG(GameServerLog, Warning, TEXT("Received termination request from GameLift"));
@@ -639,7 +625,6 @@ void AShooterGameMode::HandleProcessTerminate()
     }
 
     TransitionToState(EGameLiftServerState::Shutdown);
-#endif
 }
 #endif
 
@@ -735,7 +720,7 @@ void AShooterGameMode::HandleGameSessionUpdate(const Aws::GameLift::Server::Mode
             UE_LOG(GameServerLog, Log, TEXT("Matchmaking data updated"));
         }
     }
-#endif
+
 }
 #endif
 
