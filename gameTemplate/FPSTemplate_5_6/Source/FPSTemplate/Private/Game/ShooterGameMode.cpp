@@ -10,7 +10,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "GenericPlatform/GenericPlatformMemory.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/DateTime.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
