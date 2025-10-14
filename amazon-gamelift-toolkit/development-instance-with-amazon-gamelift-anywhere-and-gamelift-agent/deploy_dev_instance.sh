@@ -14,15 +14,18 @@ SOURCE_BUCKET_NAME="your-source-bucket-name"
 ########## 1. DOWNLOAD GAME SERVER BUILD FROM S3 ################
 
 # Download the FPS Template Server build from S3
-echo "Downloading FPSTemplateServer.zip from S3..."
-aws s3 cp s3://$SOURCE_BUCKET_NAME/builders/Linux/Server/FPSTemplate/FPSTemplateServer.zip ./FPSTemplateServer.zip
+echo "Downloading FPSTemplateServer from S3..."
+aws s3 cp s3://$SOURCE_BUCKET_NAME/builders/Linux/Server/FPSTemplate/FPSTemplateServer ./FPSTemplateServer
 
-if [ ! -f "./FPSTemplateServer.zip" ]; then
-    echo "Failed to download FPSTemplateServer.zip from S3"
+if [ ! -f "./FPSTemplateServer" ]; then
+    echo "Failed to download FPSTemplateServer from S3"
     exit 1
 fi
 
-echo "Successfully downloaded FPSTemplateServer.zip"
+echo "Successfully downloaded FPSTemplateServer"
+
+# Make the server executable
+chmod +x ./FPSTemplateServer
 
 
 ########## 2. CHECK THAT TOOLS ARE INSTALLED AND S3 BUCKET IS NOT OWNED BY SOMEONE ELSE ################
@@ -87,7 +90,7 @@ fi
 aws s3 cp "$agent_file" "s3://$BUCKET_NAME"
 
 # Copy over the FPS Template Server build
-aws s3 cp ./FPSTemplateServer.zip s3://$BUCKET_NAME
+aws s3 cp ./FPSTemplateServer s3://$BUCKET_NAME
 
 ########## 4. CREATE THE GAMELIFT RESOURCES ################
 
@@ -102,7 +105,7 @@ if [ -z "$FLEET_ID" ]; then
     echo "Creating fleet: $FLEET_NAME"
     FLEET_ID=$(aws gamelift create-fleet --name $FLEET_NAME --compute-type ANYWHERE \
              --locations "Location=$LOCATION_NAME" \
-             --runtime-configuration "ServerProcesses=[{LaunchPath=/local/game/LinuxServer/FPSTemplateServer,ConcurrentExecutions=1,Parameters=-logFile /local/game/logs/myserver1935.log -port 1935}]" \
+             --runtime-configuration "ServerProcesses=[{LaunchPath=/local/game/LinuxServerBuild/FPSTemplateServer,ConcurrentExecutions=1,Parameters=-logFile /local/game/logs/myserver1935.log -port 1935}]" \
              --anywhere-configuration Cost=0.2 \
              --query 'FleetAttributes.FleetId' --output text)
 else

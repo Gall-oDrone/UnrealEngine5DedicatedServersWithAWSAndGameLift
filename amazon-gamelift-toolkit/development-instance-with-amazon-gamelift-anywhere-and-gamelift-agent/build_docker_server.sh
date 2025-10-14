@@ -45,28 +45,47 @@ echo ""
 # Change to container directory for Docker build
 cd "$CONTAINER_DIR"
 
-echo "Building Docker image..."
+echo "Building the server and copying output to LinuxServerBuild..."
 echo "Working directory: $(pwd)"
 echo ""
 
-# Build the Docker image following the pattern from the referenced buildserver.sh
-# Note: Ignoring the rm commands for .cpp and .h files as requested
-docker build -t gamelift-server:latest .
+# Build and extract files following the pattern from the referenced buildserver.sh
+docker buildx build --platform=linux/amd64 --output=../LinuxServerBuild --target=server .
 
 if [ $? -eq 0 ]; then
     echo ""
-    echo "============================================"
-    echo "Docker image built successfully!"
-    echo "Image name: gamelift-server:latest"
-    echo "============================================"
+    echo "Build completed successfully!"
     echo ""
-    echo "You can now run the container with:"
-    echo "  docker run gamelift-server:latest"
-    echo ""
-    echo "The container structure is now ready for GameLift deployment."
+    
+    # Remove .cpp and .h files as specified in the referenced script
+    echo "Cleaning up source files..."
+    rm ../LinuxServerBuild/*.cpp 2>/dev/null || true
+    rm ../LinuxServerBuild/*.h 2>/dev/null || true
+    
+    # Zip the LinuxServerBuild folder
+    echo "Creating zip archive of the server build..."
+    cd ..
+    zip -r LinuxServerBuild.zip LinuxServerBuild/
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "============================================"
+        echo "Server build completed successfully!"
+        echo "Output directory: LinuxServerBuild/"
+        echo "Zip archive: LinuxServerBuild.zip"
+        echo "============================================"
+        echo ""
+        echo "The server files have been extracted and zipped for GameLift deployment."
+        echo "You can now upload LinuxServerBuild.zip to S3."
+    else
+        echo ""
+        echo "Error: Failed to create zip archive!"
+        echo "Server files are available in LinuxServerBuild/ directory."
+        exit 1
+    fi
 else
     echo ""
-    echo "Error: Docker build failed!"
+    echo "Error: Docker buildx build failed!"
     echo "Please check the Dockerfile and ensure all dependencies are available."
     exit 1
 fi
