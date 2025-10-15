@@ -15,6 +15,7 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSM_DOCUMENT_NAME="UploadUEBuildersToS3"
 INSTANCE_ID="${INSTANCE_ID:-}"  # Instance ID for SSM execution
+FORCE_UPDATE="${FORCE_UPDATE:-false}"  # Force SSM document update even if content is identical
 
 # Builder configuration arrays (similar to download_s3_installers.sh)
 declare -a BUILDER_PATHS=(
@@ -188,37 +189,67 @@ create_ssm_document() {
     
     # Check if document already exists
     if aws ssm describe-document --name "$SSM_DOCUMENT_NAME" --region "$AWS_REGION" &>/dev/null; then
-        echo "SSM document exists - creating new version..."
+        echo "SSM document exists - checking if update is needed..."
         
-        # Update document (creates a new version)
-        local update_output
-        if update_output=$(aws ssm update-document \
+        # Get current document content and compare with new content using checksums
+        local current_content_hash
+        current_content_hash=$(aws ssm get-document \
             --name "$SSM_DOCUMENT_NAME" \
-            --document-version "\$LATEST" \
-            --content "file://$ssm_doc_path" \
-            --region "$AWS_REGION" 2>&1); then
-            
-            # Extract new version number
-            local new_version
-            new_version=$(echo "$update_output" | grep -o '"DocumentVersion": "[^"]*"' | cut -d'"' -f4)
-            
-            echo "✓ SSM document updated successfully"
-            echo "  New version: $new_version"
-            
-            # Set the new version as default
-            echo "  Setting version $new_version as default..."
-            if aws ssm update-document-default-version \
-                --name "$SSM_DOCUMENT_NAME" \
-                --document-version "$new_version" \
-                --region "$AWS_REGION" &>/dev/null; then
-                echo "  ✓ Default version updated to $new_version"
-            else
-                echo "  ⚠️  Warning: Could not set default version (non-critical)"
-            fi
+            --region "$AWS_REGION" \
+            --query 'Content' \
+            --output text 2>/dev/null | md5sum | cut -d' ' -f1 || echo "")
+        
+        local new_content_hash
+        new_content_hash=$(cat "$ssm_doc_path" 2>/dev/null | md5sum | cut -d' ' -f1 || echo "")
+        
+        # Compare content using MD5 checksums (more reliable than string comparison)
+        if [ "$current_content_hash" = "$new_content_hash" ] && [ -n "$current_content_hash" ] && [ "$FORCE_UPDATE" != "true" ]; then
+            echo "✓ SSM document content is up to date - no update needed"
+            echo "  Using existing document version"
+            echo "  (Use --force-update to force document update)"
         else
-            echo "Error: Failed to update SSM document"
-            echo "$update_output"
-            exit 1
+            if [ "$FORCE_UPDATE" = "true" ]; then
+                echo "Force update requested - creating new version..."
+            else
+                echo "SSM document content differs - creating new version..."
+            fi
+            
+            # Update document (creates a new version)
+            local update_output
+            if update_output=$(aws ssm update-document \
+                --name "$SSM_DOCUMENT_NAME" \
+                --document-version "\$LATEST" \
+                --content "file://$ssm_doc_path" \
+                --region "$AWS_REGION" 2>&1); then
+                
+                # Extract new version number
+                local new_version
+                new_version=$(echo "$update_output" | grep -o '"DocumentVersion": "[^"]*"' | cut -d'"' -f4)
+                
+                echo "✓ SSM document updated successfully"
+                echo "  New version: $new_version"
+                
+                # Set the new version as default
+                echo "  Setting version $new_version as default..."
+                if aws ssm update-document-default-version \
+                    --name "$SSM_DOCUMENT_NAME" \
+                    --document-version "$new_version" \
+                    --region "$AWS_REGION" &>/dev/null; then
+                    echo "  ✓ Default version updated to $new_version"
+                else
+                    echo "  ⚠️  Warning: Could not set default version (non-critical)"
+                fi
+            else
+                # Check if it's a duplicate content error
+                if echo "$update_output" | grep -q "DuplicateDocumentContent"; then
+                    echo "✓ SSM document content is identical to existing version"
+                    echo "  No update needed - using existing document"
+                else
+                    echo "Error: Failed to update SSM document"
+                    echo "$update_output"
+                    exit 1
+                fi
+            fi
         fi
     else
         echo "Creating new SSM document: $SSM_DOCUMENT_NAME"
@@ -476,12 +507,14 @@ display_usage() {
     echo "  -l, --list                    List bucket contents after upload"
     echo "  --dry-run                     Show what would be done without executing"
     echo "  --show-config                 Show current builder configuration"
+    echo "  --force-update                Force SSM document update even if content is identical"
     echo "  --clean, --delete-document    Delete the SSM document"
     echo ""
     echo "Environment Variables:"
     echo "  INSTANCE_ID      EC2 instance ID (overrides -i option)"
     echo "  BUCKET_NAME      S3 bucket name (overrides -b option)"
     echo "  AWS_REGION       AWS region to use (overrides -r option)"
+    echo "  FORCE_UPDATE     Force SSM document update (true/false, overrides --force-update)"
     echo ""
     echo "Examples:"
     echo "  # Upload builders"
@@ -491,6 +524,7 @@ display_usage() {
     echo "  # Configuration and testing"
     echo "  $0 --show-config"
     echo "  $0 -i i-1234567890abcdef0 --dry-run"
+    echo "  $0 -i i-1234567890abcdef0 --force-update"
     echo ""
     echo "  # Cleanup"
     echo "  $0 --clean                    # Delete SSM document"
@@ -580,6 +614,10 @@ main() {
                 ;;
             --show-config)
                 show_config=true
+                shift
+                ;;
+            --force-update)
+                FORCE_UPDATE=true
                 shift
                 ;;
             --clean|--delete-document)

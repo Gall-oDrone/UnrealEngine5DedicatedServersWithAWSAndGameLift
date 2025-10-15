@@ -117,12 +117,28 @@ resource "aws_iam_role" "ec2_role" {
   })
 
   tags = var.common_tags
+
+  # Ensure proper cleanup order
+  lifecycle {
+    create_before_destroy = false
+  }
 }
 
 # IAM Instance Profile
 resource "aws_iam_instance_profile" "ec2_profile" {
   name = "${var.project_name}-ec2-profile-${var.environment}"
   role = aws_iam_role.ec2_role.name
+
+  depends_on = [
+    aws_iam_role_policy.cloudwatch_policy,
+    aws_iam_role_policy.ssm_policy,
+    aws_iam_role_policy_attachment.ssm_managed_instance_core
+  ]
+
+  # Ensure proper cleanup order
+  lifecycle {
+    create_before_destroy = false
+  }
 }
 
 # IAM Policy for CloudWatch Logs

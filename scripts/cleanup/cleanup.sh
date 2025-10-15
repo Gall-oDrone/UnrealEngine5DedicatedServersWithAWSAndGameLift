@@ -292,6 +292,92 @@ cleanup_aws_resources() {
     print_success "AWS resource cleanup completed"
 }
 
+# Function to clean up IAM resources
+cleanup_iam_resources() {
+    local env="$1"
+    
+    print_status "Cleaning up IAM resources for environment: $env"
+    
+    # Clean up instance profiles
+    local instance_profiles=$(aws iam list-instance-profiles \
+        --query "InstanceProfiles[?contains(InstanceProfileName, 'ue5-compilation-${env}-ec2-profile')].InstanceProfileName" \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -n "$instance_profiles" ]]; then
+        print_warning "Found IAM instance profiles: $instance_profiles"
+        if [[ "$DRY_RUN" != true ]]; then
+            for profile in $instance_profiles; do
+                print_status "Deleting instance profile: $profile"
+                # Remove roles from instance profile first
+                local roles=$(aws iam get-instance-profile \
+                    --instance-profile-name "$profile" \
+                    --query "InstanceProfile.Roles[].RoleName" \
+                    --output text 2>/dev/null || echo "")
+                
+                for role in $roles; do
+                    print_status "Removing role $role from instance profile $profile"
+                    aws iam remove-role-from-instance-profile \
+                        --instance-profile-name "$profile" \
+                        --role-name "$role" 2>/dev/null || true
+                done
+                
+                # Delete the instance profile
+                aws iam delete-instance-profile \
+                    --instance-profile-name "$profile" 2>/dev/null || true
+            done
+        else
+            print_warning "Would delete instance profiles: $instance_profiles"
+        fi
+    fi
+    
+    # Clean up IAM roles
+    local roles=$(aws iam list-roles \
+        --query "Roles[?contains(RoleName, 'ue5-compilation-${env}-ec2-role')].RoleName" \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -n "$roles" ]]; then
+        print_warning "Found IAM roles: $roles"
+        if [[ "$DRY_RUN" != true ]]; then
+            for role in $roles; do
+                print_status "Deleting IAM role: $role"
+                
+                # Detach managed policies
+                local attached_policies=$(aws iam list-attached-role-policies \
+                    --role-name "$role" \
+                    --query "AttachedPolicies[].PolicyArn" \
+                    --output text 2>/dev/null || echo "")
+                
+                for policy_arn in $attached_policies; do
+                    print_status "Detaching policy $policy_arn from role $role"
+                    aws iam detach-role-policy \
+                        --role-name "$role" \
+                        --policy-arn "$policy_arn" 2>/dev/null || true
+                done
+                
+                # Delete inline policies
+                local inline_policies=$(aws iam list-role-policies \
+                    --role-name "$role" \
+                    --query "PolicyNames" \
+                    --output text 2>/dev/null || echo "")
+                
+                for policy_name in $inline_policies; do
+                    print_status "Deleting inline policy $policy_name from role $role"
+                    aws iam delete-role-policy \
+                        --role-name "$role" \
+                        --policy-name "$policy_name" 2>/dev/null || true
+                done
+                
+                # Delete the role
+                aws iam delete-role --role-name "$role" 2>/dev/null || true
+            done
+        else
+            print_warning "Would delete IAM roles: $roles"
+        fi
+    fi
+    
+    print_success "IAM resource cleanup completed"
+}
+
 # Function to clean up CloudWatch logs
 cleanup_cloudwatch_logs() {
     local env="$1"
@@ -384,6 +470,7 @@ Force Mode: $FORCE_CLEANUP
 
 Resources Cleaned:
 - Terraform managed resources: ✓
+- IAM instance profiles and roles: ✓
 - Local Terraform files: ✓
 - Orphaned AWS resources: ✓
 - CloudWatch logs: ✓
@@ -435,6 +522,7 @@ cleanup_environment() {
     
     # Run cleanup steps
     cleanup_terraform_resources "$env"
+    cleanup_iam_resources "$env"
     cleanup_aws_resources "$env"
     cleanup_cloudwatch_logs "$env"
     cleanup_local_files "$env"
