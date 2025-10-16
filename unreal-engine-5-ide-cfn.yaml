@@ -874,6 +874,10 @@ Resources:
             Action:
               - ssm:GetParameter
             Resource: !Sub arn:aws:ssm:${AWS::Region}::parameter/aws/service/*
+          - Effect: Allow
+            Action:
+              - gamelift:*
+            Resource: ["*"]
   UnrealEngineEc2Policy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
