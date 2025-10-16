@@ -203,34 +203,45 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
         // Setup callbacks and complete initialization
         SetupGameLiftCallbacks();
 
-        // Call ProcessReady
-        ProcessParameters = MakeShared<FProcessParameters>();
+        // DELAY ProcessReady to allow SDK to fully initialize
+        // The SDK initialization is asynchronous internally and needs time to complete
+        GetWorldTimerManager().SetTimer(
+            RetryInitTimerHandle,
+            [this]() {
+                UE_LOG(GameServerLog, Log, TEXT("Calling ProcessReady after SDK initialization delay..."));
+                
+                // Call ProcessReady
+                ProcessParameters = MakeShared<FProcessParameters>();
 
-        // Set port
-        ProcessParameters->port = ServerConfig.ServerPort;
+                // Set port
+                ProcessParameters->port = ServerConfig.ServerPort;
 
-        // Setup log files
-        TArray<FString> LogFiles;
-        LogFiles.Add(ServerConfig.LogDirectory + TEXT("server.log"));
-        LogFiles.Append(ServerConfig.AdditionalLogFiles);
-        ProcessParameters->logParameters = LogFiles;
+                // Setup log files
+                TArray<FString> LogFiles;
+                LogFiles.Add(ServerConfig.LogDirectory + TEXT("server.log"));
+                LogFiles.Append(ServerConfig.AdditionalLogFiles);
+                ProcessParameters->logParameters = LogFiles;
 
-        // Call ProcessReady
-        FGameLiftGenericOutcome ProcessReadyOutcome = GameLiftModule->ProcessReady(*ProcessParameters);
+                // Call ProcessReady
+                FGameLiftGenericOutcome ProcessReadyOutcome = GameLiftModule->ProcessReady(*ProcessParameters);
 
-        if (ProcessReadyOutcome.IsSuccess())
-        {
-            UE_LOG(GameServerLog, Log, TEXT("ProcessReady successful. Server is ready to host game sessions."));
-            bIsGameLiftInitialized = true;
-            TransitionToState(EGameLiftServerState::Ready);
-        }
-        else
-        {
-            FGameLiftError Error = ProcessReadyOutcome.GetError();
-            LastErrorMessage = Error.m_errorMessage;
-            UE_LOG(GameServerLog, Error, TEXT("ProcessReady failed: %s"), *LastErrorMessage);
-            TransitionToState(EGameLiftServerState::Error);
-        }
+                if (ProcessReadyOutcome.IsSuccess())
+                {
+                    UE_LOG(GameServerLog, Log, TEXT("ProcessReady successful. Server is ready to host game sessions."));
+                    bIsGameLiftInitialized = true;
+                    TransitionToState(EGameLiftServerState::Ready);
+                }
+                else
+                {
+                    FGameLiftError Error = ProcessReadyOutcome.GetError();
+                    LastErrorMessage = Error.m_errorMessage;
+                    UE_LOG(GameServerLog, Error, TEXT("ProcessReady failed: %s"), *LastErrorMessage);
+                    TransitionToState(EGameLiftServerState::Error);
+                }
+            },
+            2.0f, // 2 second delay to allow SDK to fully initialize
+            false
+        );
     }
     else
     {
