@@ -511,15 +511,15 @@ void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutPar
     
     // Log final ServerParameters state
     UE_LOG(GameServerLog, Log, TEXT("📋 Final ServerParameters state:"));
-    UE_LOG(GameServerLog, Log, TEXT("   - WebSocket URL: %s"), (OutParams.m_webSocketUrl.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - Fleet ID: %s"), (OutParams.m_fleetId.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - Host ID: %s"), (OutParams.m_hostId.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - Process ID: %s"), (OutParams.m_processId.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - Auth Token: %s"), (OutParams.m_authToken.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - AWS Region: %s"), (OutParams.m_awsRegion.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - Access Key: %s"), (OutParams.m_accessKey.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - Secret Key: %s"), (OutParams.m_secretKey.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
-    UE_LOG(GameServerLog, Log, TEXT("   - Session Token: %s"), (OutParams.m_sessionToken.length() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - WebSocket URL: %s"), (OutParams.m_webSocketUrl.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Fleet ID: %s"), (OutParams.m_fleetId.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Host ID: %s"), (OutParams.m_hostId.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Process ID: %s"), (OutParams.m_processId.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Auth Token: %s"), (OutParams.m_authToken.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - AWS Region: %s"), (OutParams.m_awsRegion.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Access Key: %s"), (OutParams.m_accessKey.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Secret Key: %s"), (OutParams.m_secretKey.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Session Token: %s"), (OutParams.m_sessionToken.Len() == 0) ? TEXT("[EMPTY]") : TEXT("[SET]"));
 }
 
 bool AShooterGameMode::ValidateServerConfiguration()
