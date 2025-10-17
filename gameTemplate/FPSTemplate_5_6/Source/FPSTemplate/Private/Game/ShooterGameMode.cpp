@@ -154,25 +154,48 @@ void AShooterGameMode::Tick(float DeltaSeconds)
 // GameLift Initialization
 void AShooterGameMode::InitGameLift()
 {
-    UE_LOG(GameServerLog, Log, TEXT("Initializing GameLift integration..."));
+    UE_LOG(GameServerLog, Log, TEXT("🚀 Initializing GameLift integration..."));
+    UE_LOG(GameServerLog, Log, TEXT("🔍 Checking for GameLift SDK module..."));
 
     // Load the GameLift module
-    GameLiftModule = &FModuleManager::LoadModuleChecked<FGameLiftServerSDKModule>(FName("GameLiftServerSDK"));
-    if (!GameLiftModule)
+    try
     {
-        UE_LOG(GameServerLog, Error, TEXT("Failed to load GameLift SDK module"));
+        GameLiftModule = &FModuleManager::LoadModuleChecked<FGameLiftServerSDKModule>(FName("GameLiftServerSDK"));
+        UE_LOG(GameServerLog, Log, TEXT("✅ GameLift SDK module loaded successfully"));
+        
+        if (!GameLiftModule)
+        {
+            UE_LOG(GameServerLog, Error, TEXT("❌ GameLift module pointer is null after loading"));
+            TransitionToState(EGameLiftServerState::Error);
+            return;
+        }
+        
+        UE_LOG(GameServerLog, Log, TEXT("🎯 GameLift module is valid, proceeding with initialization"));
+    }
+    catch (const std::exception& e)
+    {
+        UE_LOG(GameServerLog, Error, TEXT("❌ Exception loading GameLift SDK module: %s"), ANSI_TO_TCHAR(e.what()));
+        TransitionToState(EGameLiftServerState::Error);
+        return;
+    }
+    catch (...)
+    {
+        UE_LOG(GameServerLog, Error, TEXT("❌ Unknown exception loading GameLift SDK module"));
         TransitionToState(EGameLiftServerState::Error);
         return;
     }
 
+    UE_LOG(GameServerLog, Log, TEXT("🔄 Starting GameLift initialization with retry logic"));
     InitGameLiftWithRetry(0);
 }
 
 void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
 {
+    UE_LOG(GameServerLog, Log, TEXT("🚀 InitGameLiftWithRetry called - Attempt %d/%d"), AttemptNumber + 1, ServerConfig.MaxRetryAttempts);
+    
     if (AttemptNumber >= ServerConfig.MaxRetryAttempts)
     {
-        UE_LOG(GameServerLog, Error, TEXT("Failed to initialize GameLift after %d attempts"), ServerConfig.MaxRetryAttempts);
+        UE_LOG(GameServerLog, Error, TEXT("❌ Failed to initialize GameLift after %d attempts"), ServerConfig.MaxRetryAttempts);
         ConsecutiveInitFailures = ServerConfig.MaxRetryAttempts;
         TransitionToState(EGameLiftServerState::Error);
         return;
@@ -180,54 +203,80 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
 
     // Setup server parameters
     FServerParameters ServerParameters;
+    UE_LOG(GameServerLog, Log, TEXT("📦 Created empty FServerParameters"));
 
     // Check if this is a GameLift Anywhere fleet
     bIsAnywhereFleet = FParse::Param(FCommandLine::Get(), TEXT("glAnywhere"));
+    UE_LOG(GameServerLog, Log, TEXT("🔍 Checking for glAnywhere parameter..."));
+    UE_LOG(GameServerLog, Log, TEXT("   - bIsAnywhereFleet: %s"), bIsAnywhereFleet ? TEXT("TRUE") : TEXT("FALSE"));
+    
     if (bIsAnywhereFleet)
     {
+        UE_LOG(GameServerLog, Log, TEXT("🎯 GameLift Anywhere fleet detected - parsing parameters"));
         ParseGameLiftAnywhereParameters(ServerParameters);
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("⚠️ Not a GameLift Anywhere fleet - using default parameters"));
     }
 
     // Attempt initialization
-    UE_LOG(GameServerLog, Log, TEXT("Attempting GameLift SDK initialization (attempt %d/%d)..."),
+    UE_LOG(GameServerLog, Log, TEXT("🔄 Attempting GameLift SDK initialization (attempt %d/%d)..."),
         AttemptNumber + 1, ServerConfig.MaxRetryAttempts);
+    UE_LOG(GameServerLog, Log, TEXT("   - GameLiftModule valid: %s"), GameLiftModule ? TEXT("YES") : TEXT("NO"));
 
     FGameLiftGenericOutcome InitOutcome = GameLiftModule->InitSDK(ServerParameters);
+    UE_LOG(GameServerLog, Log, TEXT("📞 InitSDK call completed"));
 
     if (InitOutcome.IsSuccess())
     {
-        UE_LOG(GameServerLog, Log, TEXT("GameLift SDK initialized successfully"));
+        UE_LOG(GameServerLog, Log, TEXT("✅ GameLift SDK initialized successfully"));
         LastInitAttemptTime = FDateTime::Now();
         ConsecutiveInitFailures = 0;
 
         // Setup callbacks and complete initialization
+        UE_LOG(GameServerLog, Log, TEXT("🔗 Setting up GameLift callbacks"));
         SetupGameLiftCallbacks();
 
         // DELAY ProcessReady to allow SDK to fully initialize
         // The SDK initialization is asynchronous internally and needs time to complete
+        UE_LOG(GameServerLog, Log, TEXT("⏰ Setting timer for ProcessReady call (2.0 second delay)"));
         GetWorldTimerManager().SetTimer(
             RetryInitTimerHandle,
             [this]() {
-                UE_LOG(GameServerLog, Log, TEXT("Calling ProcessReady after SDK initialization delay..."));
+                UE_LOG(GameServerLog, Log, TEXT("🕐 Timer fired - Calling ProcessReady after SDK initialization delay..."));
+                
+                // Check if GameLift module is still valid
+                if (!GameLiftModule)
+                {
+                    UE_LOG(GameServerLog, Error, TEXT("❌ GameLift module is null, cannot call ProcessReady"));
+                    TransitionToState(EGameLiftServerState::Error);
+                    return;
+                }
                 
                 // Call ProcessReady
+                UE_LOG(GameServerLog, Log, TEXT("📦 Creating FProcessParameters"));
                 ProcessParameters = MakeShared<FProcessParameters>();
 
                 // Set port
                 ProcessParameters->port = ServerConfig.ServerPort;
+                UE_LOG(GameServerLog, Log, TEXT("🔌 Set port: %d"), ServerConfig.ServerPort);
 
                 // Setup log files
                 TArray<FString> LogFiles;
                 LogFiles.Add(ServerConfig.LogDirectory + TEXT("server.log"));
                 LogFiles.Append(ServerConfig.AdditionalLogFiles);
                 ProcessParameters->logParameters = LogFiles;
+                UE_LOG(GameServerLog, Log, TEXT("📝 Configured log files: %d files"), LogFiles.Num());
 
                 // Call ProcessReady
+                UE_LOG(GameServerLog, Log, TEXT("📞 Calling ProcessReady..."));
                 FGameLiftGenericOutcome ProcessReadyOutcome = GameLiftModule->ProcessReady(*ProcessParameters);
+                UE_LOG(GameServerLog, Log, TEXT("📞 ProcessReady call completed"));
 
                 if (ProcessReadyOutcome.IsSuccess())
                 {
-                    UE_LOG(GameServerLog, Log, TEXT("ProcessReady successful. Server is ready to host game sessions."));
+                    UE_LOG(GameServerLog, Log, TEXT("✅ ProcessReady successful. Server is ready to host game sessions."));
                     bIsGameLiftInitialized = true;
                     TransitionToState(EGameLiftServerState::Ready);
                 }
@@ -235,7 +284,7 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
                 {
                     FGameLiftError Error = ProcessReadyOutcome.GetError();
                     LastErrorMessage = Error.m_errorMessage;
-                    UE_LOG(GameServerLog, Error, TEXT("ProcessReady failed: %s"), *LastErrorMessage);
+                    UE_LOG(GameServerLog, Error, TEXT("❌ ProcessReady failed: %s"), *LastErrorMessage);
                     TransitionToState(EGameLiftServerState::Error);
                 }
             },
@@ -249,15 +298,20 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
         LastErrorMessage = Error.m_errorMessage;
         ConsecutiveInitFailures++;
 
-        UE_LOG(GameServerLog, Warning, TEXT("GameLift SDK initialization failed: %s"), *LastErrorMessage);
+        UE_LOG(GameServerLog, Warning, TEXT("❌ GameLift SDK initialization failed: %s"), *LastErrorMessage);
+        UE_LOG(GameServerLog, Log, TEXT("📊 Retry statistics: Attempt %d/%d, Consecutive failures: %d"), 
+            AttemptNumber + 1, ServerConfig.MaxRetryAttempts, ConsecutiveInitFailures);
 
         // Schedule retry with exponential backoff
         float RetryDelay = ServerConfig.RetryDelaySeconds * FMath::Pow(ServerConfig.RetryBackoffMultiplier, AttemptNumber);
-        UE_LOG(GameServerLog, Log, TEXT("Retrying in %.2f seconds..."), RetryDelay);
+        UE_LOG(GameServerLog, Log, TEXT("⏳ Scheduling retry in %.2f seconds..."), RetryDelay);
 
         GetWorldTimerManager().SetTimer(
             RetryInitTimerHandle,
-            [this, AttemptNumber]() { InitGameLiftWithRetry(AttemptNumber + 1); },
+            [this, AttemptNumber]() { 
+                UE_LOG(GameServerLog, Log, TEXT("🔄 Retry timer fired - attempting initialization again"));
+                InitGameLiftWithRetry(AttemptNumber + 1); 
+            },
             RetryDelay,
             false
         );
@@ -266,36 +320,51 @@ void AShooterGameMode::InitGameLiftWithRetry(int32 AttemptNumber)
 
 void AShooterGameMode::SetupGameLiftCallbacks()
 {
+    UE_LOG(GameServerLog, Log, TEXT("🔗 Setting up GameLift callbacks"));
+    
     if (!ProcessParameters.IsValid())
     {
+        UE_LOG(GameServerLog, Log, TEXT("📦 ProcessParameters not valid, creating new instance"));
         ProcessParameters = MakeShared<FProcessParameters>();
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Log, TEXT("✅ ProcessParameters already valid"));
     }
 
     // OnStartGameSession callback
+    UE_LOG(GameServerLog, Log, TEXT("🎮 Binding OnStartGameSession callback"));
     ProcessParameters->OnStartGameSession.BindLambda([this](Aws::GameLift::Server::Model::GameSession InGameSession)
         {
+            UE_LOG(GameServerLog, Log, TEXT("🎮 OnStartGameSession callback triggered"));
             HandleGameSessionStart(InGameSession);
         });
 
     // OnProcessTerminate callback
+    UE_LOG(GameServerLog, Log, TEXT("🛑 Binding OnTerminate callback"));
     ProcessParameters->OnTerminate.BindLambda([this]()
         {
+            UE_LOG(GameServerLog, Log, TEXT("🛑 OnTerminate callback triggered"));
             HandleProcessTerminate();
         });
 
     // OnHealthCheck callback
+    UE_LOG(GameServerLog, Log, TEXT("💓 Binding OnHealthCheck callback"));
     ProcessParameters->OnHealthCheck.BindLambda([this]()
         {
+            UE_LOG(GameServerLog, Verbose, TEXT("💓 OnHealthCheck callback triggered"));
             return HandleHealthCheck();
         });
 
     // OnUpdateGameSession callback (for FlexMatch updates)
+    UE_LOG(GameServerLog, Log, TEXT("🔄 Binding OnUpdateGameSession callback"));
     ProcessParameters->OnUpdateGameSession.BindLambda([this](Aws::GameLift::Server::Model::UpdateGameSession UpdateGameSession)
         {
+            UE_LOG(GameServerLog, Log, TEXT("🔄 OnUpdateGameSession callback triggered"));
             HandleGameSessionUpdate(UpdateGameSession);
         });
 
-    UE_LOG(GameServerLog, Log, TEXT("GameLift callbacks configured"));
+    UE_LOG(GameServerLog, Log, TEXT("✅ All GameLift callbacks configured successfully"));
 }
 #endif
 
@@ -330,13 +399,21 @@ void AShooterGameMode::ParseCommandLineArguments()
 void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutParams)
 {
     UE_LOG(GameServerLog, Log, TEXT("Parsing GameLift Anywhere parameters..."));
+    
+    // Log the full command line for debugging
+    FString FullCommandLine = FCommandLine::Get();
+    UE_LOG(GameServerLog, Log, TEXT("Full command line: %s"), *FullCommandLine);
 
     // Parse WebSocket URL
     FString WebSocketUrl;
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereWebSocketUrl="), WebSocketUrl))
     {
         OutParams.m_webSocketUrl = TCHAR_TO_UTF8(*WebSocketUrl);
-        UE_LOG(GameServerLog, Log, TEXT("WebSocket URL configured"));
+        UE_LOG(GameServerLog, Log, TEXT("✅ WebSocket URL configured: %s"), *WebSocketUrl);
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("❌ WebSocket URL not found in command line"));
     }
 
     // Parse Fleet ID
@@ -344,7 +421,11 @@ void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutPar
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereFleetId="), FleetId))
     {
         OutParams.m_fleetId = TCHAR_TO_UTF8(*FleetId);
-        UE_LOG(GameServerLog, Log, TEXT("Fleet ID: %s"), *FleetId);
+        UE_LOG(GameServerLog, Log, TEXT("✅ Fleet ID: %s"), *FleetId);
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("❌ Fleet ID not found in command line"));
     }
 
     // Parse or generate Process ID
@@ -355,16 +436,24 @@ void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutPar
         ProcessId = FString::Printf(TEXT("Process_%s_%d"),
             *FDateTime::Now().ToString(),
             FMath::RandRange(1000, 9999));
+        UE_LOG(GameServerLog, Log, TEXT("🔄 Generated Process ID: %s"), *ProcessId);
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Log, TEXT("✅ Process ID from command line: %s"), *ProcessId);
     }
     OutParams.m_processId = TCHAR_TO_UTF8(*ProcessId);
-    UE_LOG(GameServerLog, Log, TEXT("Process ID: %s"), *ProcessId);
 
     // Parse Host ID
     FString HostId;
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereHostId="), HostId))
     {
         OutParams.m_hostId = TCHAR_TO_UTF8(*HostId);
-        UE_LOG(GameServerLog, Log, TEXT("Host ID: %s"), *HostId);
+        UE_LOG(GameServerLog, Log, TEXT("✅ Host ID: %s"), *HostId);
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("❌ Host ID not found in command line"));
     }
 
     // Parse sensitive parameters without logging their values
@@ -373,32 +462,64 @@ void AShooterGameMode::ParseGameLiftAnywhereParameters(FServerParameters& OutPar
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereAuthToken="), AuthToken))
     {
         OutParams.m_authToken = TCHAR_TO_UTF8(*AuthToken);
-        UE_LOG(GameServerLog, Log, TEXT("Auth Token: [REDACTED]"));
+        UE_LOG(GameServerLog, Log, TEXT("✅ Auth Token: [REDACTED]"));
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("❌ Auth Token not found in command line"));
     }
 
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereAwsRegion="), AwsRegion))
     {
         OutParams.m_awsRegion = TCHAR_TO_UTF8(*AwsRegion);
-        UE_LOG(GameServerLog, Log, TEXT("AWS Region: %s"), *AwsRegion);
+        UE_LOG(GameServerLog, Log, TEXT("✅ AWS Region: %s"), *AwsRegion);
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("❌ AWS Region not found in command line"));
     }
 
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereAccessKey="), AccessKey))
     {
         OutParams.m_accessKey = TCHAR_TO_UTF8(*AccessKey);
-        UE_LOG(GameServerLog, Log, TEXT("Access Key: [REDACTED]"));
+        UE_LOG(GameServerLog, Log, TEXT("✅ Access Key: [REDACTED]"));
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Log, TEXT("ℹ️ Access Key not provided (using EC2 instance role)"));
     }
 
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereSecretKey="), SecretKey))
     {
         OutParams.m_secretKey = TCHAR_TO_UTF8(*SecretKey);
-        UE_LOG(GameServerLog, Log, TEXT("Secret Key: [REDACTED]"));
+        UE_LOG(GameServerLog, Log, TEXT("✅ Secret Key: [REDACTED]"));
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Log, TEXT("ℹ️ Secret Key not provided (using EC2 instance role)"));
     }
 
     if (FParse::Value(FCommandLine::Get(), TEXT("glAnywhereSessionToken="), SessionToken))
     {
         OutParams.m_sessionToken = TCHAR_TO_UTF8(*SessionToken);
-        UE_LOG(GameServerLog, Log, TEXT("Session Token: [REDACTED]"));
+        UE_LOG(GameServerLog, Log, TEXT("✅ Session Token: [REDACTED]"));
     }
+    else
+    {
+        UE_LOG(GameServerLog, Log, TEXT("ℹ️ Session Token not provided (using EC2 instance role)"));
+    }
+    
+    // Log final ServerParameters state
+    UE_LOG(GameServerLog, Log, TEXT("📋 Final ServerParameters state:"));
+    UE_LOG(GameServerLog, Log, TEXT("   - WebSocket URL: %s"), OutParams.m_webSocketUrl.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Fleet ID: %s"), OutParams.m_fleetId.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Host ID: %s"), OutParams.m_hostId.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Process ID: %s"), OutParams.m_processId.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Auth Token: %s"), OutParams.m_authToken.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - AWS Region: %s"), OutParams.m_awsRegion.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Access Key: %s"), OutParams.m_accessKey.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Secret Key: %s"), OutParams.m_secretKey.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
+    UE_LOG(GameServerLog, Log, TEXT("   - Session Token: %s"), OutParams.m_sessionToken.empty() ? TEXT("[EMPTY]") : TEXT("[SET]"));
 }
 
 bool AShooterGameMode::ValidateServerConfiguration()
