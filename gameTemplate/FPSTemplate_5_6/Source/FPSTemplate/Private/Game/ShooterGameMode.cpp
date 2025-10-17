@@ -40,11 +40,18 @@ AShooterGameMode::AShooterGameMode() :
 #endif
     , ConsecutiveInitFailures(0)
 {
-    // Set default pawn class
+    // Set default pawn class - handle missing Blueprint gracefully
     static ConstructorHelpers::FClassFinder<APawn> PlayerPawnBPClass(TEXT("/Game/ThirdPerson/Blueprints/BP_ThirdPersonCharacter"));
     if (PlayerPawnBPClass.Class != NULL)
     {
         DefaultPawnClass = PlayerPawnBPClass.Class;
+        UE_LOG(GameServerLog, Log, TEXT("✅ Loaded Blueprint character: BP_ThirdPersonCharacter"));
+    }
+    else
+    {
+        UE_LOG(GameServerLog, Warning, TEXT("⚠️ Could not load BP_ThirdPersonCharacter - using default pawn class"));
+        // Use the default pawn class from AGameMode
+        // This ensures the game mode still works even if the Blueprint is missing
     }
 
     // Enable ticking for health monitoring
