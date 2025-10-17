@@ -140,6 +140,8 @@ show_usage() {
     echo "  -o, --output FORMAT      Output format: token, env, json (default: token)"
     echo "  -e, --export             Export as environment variable"
     echo "  -s, --save FILE          Save token to file"
+    echo "  --cleanup TYPE           Cleanup auth tokens (env, file, all, temp)"
+    echo "  --cleanup-file FILE      Specify file path for file cleanup"
     echo "  -h, --help               Show this help message"
     echo ""
     echo "Examples:"
@@ -147,6 +149,10 @@ show_usage() {
     echo "  $0 -f fleet-12345678-1234-1234-1234-123456789012 -c MyCompute -o env"
     echo "  $0 -f fleet-12345678-1234-1234-1234-123456789012 -c MyCompute -e"
     echo "  $0 -f fleet-12345678-1234-1234-1234-123456789012 -c MyCompute -s /tmp/gamelift_token.txt"
+    echo "  $0 --cleanup env"
+    echo "  $0 --cleanup file --cleanup-file /tmp/gamelift_token.txt"
+    echo "  $0 --cleanup all"
+    echo "  $0 --cleanup temp"
     echo ""
     echo "Environment Variables:"
     echo "  GAMELIFT_FLEET_ID        Default fleet ID"
@@ -174,6 +180,89 @@ save_token_to_file() {
     print_success "Token saved to $file_path"
 }
 
+# Function to cleanup auth tokens and temporary files
+cleanup_auth_tokens() {
+    local cleanup_type="$1"
+    local file_path="$2"
+    
+    print_status "Starting cleanup process..."
+    
+    case $cleanup_type in
+        "env")
+            # Clear environment variable
+            if [[ -n "$GAMELIFT_SDK_AUTH_TOKEN" ]]; then
+                unset GAMELIFT_SDK_AUTH_TOKEN
+                print_success "Cleared GAMELIFT_SDK_AUTH_TOKEN environment variable"
+            else
+                print_warning "GAMELIFT_SDK_AUTH_TOKEN environment variable was not set"
+            fi
+            ;;
+        "file")
+            # Remove specific file
+            if [[ -n "$file_path" ]]; then
+                if [[ -f "$file_path" ]]; then
+                    rm -f "$file_path"
+                    print_success "Removed token file: $file_path"
+                else
+                    print_warning "Token file not found: $file_path"
+                fi
+            else
+                print_error "File path required for file cleanup"
+                return 1
+            fi
+            ;;
+        "all")
+            # Clear environment variable
+            if [[ -n "$GAMELIFT_SDK_AUTH_TOKEN" ]]; then
+                unset GAMELIFT_SDK_AUTH_TOKEN
+                print_success "Cleared GAMELIFT_SDK_AUTH_TOKEN environment variable"
+            fi
+            
+            # Remove common token file locations
+            local common_paths=(
+                "/tmp/gamelift_token.txt"
+                "/tmp/gamelift_auth_token"
+                "./gamelift_token.txt"
+                "./gamelift_auth_token"
+                "$HOME/.gamelift_token"
+                "$HOME/.gamelift_auth_token"
+            )
+            
+            local removed_count=0
+            for path in "${common_paths[@]}"; do
+                if [[ -f "$path" ]]; then
+                    rm -f "$path"
+                    print_success "Removed token file: $path"
+                    ((removed_count++))
+                fi
+            done
+            
+            if [[ $removed_count -eq 0 ]]; then
+                print_warning "No common token files found to remove"
+            fi
+            ;;
+        "temp")
+            # Clean up temporary files in /tmp
+            local temp_files=($(find /tmp -name "*gamelift*" -type f 2>/dev/null || true))
+            if [[ ${#temp_files[@]} -gt 0 ]]; then
+                for file in "${temp_files[@]}"; do
+                    rm -f "$file"
+                    print_success "Removed temporary file: $file"
+                done
+            else
+                print_warning "No temporary GameLift files found in /tmp"
+            fi
+            ;;
+        *)
+            print_error "Invalid cleanup type: $cleanup_type"
+            print_status "Valid cleanup types: env, file, all, temp"
+            return 1
+            ;;
+    esac
+    
+    print_success "Cleanup completed!"
+}
+
 # Main script
 main() {
     # Default values
@@ -183,6 +272,8 @@ main() {
     OUTPUT_FORMAT="token"
     EXPORT_ENV=false
     SAVE_FILE=""
+    CLEANUP_TYPE=""
+    CLEANUP_FILE=""
     
     # Check for environment variables
     if [[ -n "$GAMELIFT_FLEET_ID" ]]; then
@@ -219,6 +310,14 @@ main() {
                 SAVE_FILE="$2"
                 shift 2
                 ;;
+            --cleanup)
+                CLEANUP_TYPE="$2"
+                shift 2
+                ;;
+            --cleanup-file)
+                CLEANUP_FILE="$2"
+                shift 2
+                ;;
             -h|--help)
                 show_usage
                 exit 0
@@ -230,6 +329,13 @@ main() {
                 ;;
         esac
     done
+    
+    # Handle cleanup mode
+    if [[ -n "$CLEANUP_TYPE" ]]; then
+        print_status "GameLift SDK Authentication Token Cleanup"
+        cleanup_auth_tokens "$CLEANUP_TYPE" "$CLEANUP_FILE"
+        exit 0
+    fi
     
     # Validate required parameters
     if [[ -z "$FLEET_ID" ]]; then

@@ -1,179 +1,263 @@
-# GameLift SDK Authentication Token Generator
+# GameLift Anywhere Scripts
 
-This directory contains scripts for generating GameLift SDK authentication tokens for your game servers.
+This directory contains scripts to help with GameLift Anywhere deployment and management.
 
-## Files
+## Scripts Overview
 
-- `generate_auth_token.sh` - Main script for generating GameLift SDK authentication tokens
-- `example_usage.sh` - Examples showing different ways to use the generator script
-- `README.md` - This documentation file
+### 1. `setup_game_server.sh` - Main Orchestration Script
+The main script that orchestrates the entire GameLift Anywhere setup process for an EC2 instance.
 
-## Prerequisites
+**Features:**
+- Takes EC2 instance ID and GameLift fleet ID as input
+- Automatically creates GameLift Anywhere fleets if needed
+- Automatically registers a new compute name
+- Generates authentication tokens
+- Creates a startup script for the game server
+- Generates environment variable files (.env, JSON, YAML)
+- Provides complete configuration summary
+- Comprehensive cleanup and fleet management capabilities
 
-1. **AWS CLI**: Must be installed and configured with appropriate credentials
-2. **jq**: JSON parser (will be installed automatically if missing on supported systems)
-3. **AWS Permissions**: Your AWS credentials must have permission to call `gamelift:GetComputeAuthToken`
-
-## Quick Start
-
-### Basic Usage
-
+**Usage:**
 ```bash
-# Generate a token for your fleet and compute
-./generate_auth_token.sh --fleet-id your-fleet-id --compute-name your-compute-name
+# Basic usage (auto-creates fleet if needed)
+./setup_game_server.sh --instance-id i-1234567890abcdef0
+
+# With specific fleet ID
+./setup_game_server.sh --instance-id i-1234567890abcdef0 --fleet-id fleet-12345678-1234-1234-1234-123456789012
+
+# With custom location
+./setup_game_server.sh -i i-1234567890abcdef0 -f fleet-12345678-1234-1234-1234-123456789012 -l custom-production-location
+
+# Skip registration (use existing compute)
+./setup_game_server.sh -i i-1234567890abcdef0 -f fleet-12345678-1234-1234-1234-123456789012 --skip-registration -c MyExistingCompute
+
+# Generate environment files in multiple formats
+./setup_game_server.sh -i i-1234567890abcdef0 --env-formats env,json,yaml
+
+# Cleanup operations
+./setup_game_server.sh --cleanup temp
+./setup_game_server.sh --cleanup all
+./setup_game_server.sh --cleanup delete-fleet --cleanup-file fleet-12345678-1234-1234-1234-123456789012
+./setup_game_server.sh --cleanup delete-all-fleets
 ```
 
-### Common Use Cases
+### 2. `register_compute.sh` - Compute Registration
+Registers a new compute name with GameLift Anywhere.
 
-#### 1. Get Token for Environment Variable
+**Features:**
+- Validates fleet ID and ensures it's an Anywhere fleet
+- Auto-detects public IP addresses
+- Generates random compute names with timestamps
+- Checks for existing compute names to avoid conflicts
+- Supports multiple output formats
+- Comprehensive cleanup capabilities
 
+**Usage:**
 ```bash
-# Get token formatted for export
-./generate_auth_token.sh --fleet-id fleet-123 --compute-name MyServer --output env
-# Output: export GAMELIFT_SDK_AUTH_TOKEN="your-token-here"
+# Auto-generate compute name and detect IP
+./register_compute.sh --fleet-id fleet-12345678-1234-1234-1234-123456789012
+
+# Custom compute name
+./register_compute.sh -f fleet-12345678-1234-1234-1234-123456789012 -c MyGameServer
+
+# JSON output
+./register_compute.sh -f fleet-12345678-1234-1234-1234-123456789012 -o json
+
+# Cleanup operations
+./register_compute.sh --cleanup temp
+./register_compute.sh --cleanup all
+./register_compute.sh --cleanup file --cleanup-file compute_info.json
 ```
 
-#### 2. Export Token Directly
+### 3. `generate_auth_token.sh` - Authentication Token Generation
+Generates authentication tokens for GameLift SDK.
 
+**Features:**
+- Generates auth tokens for registered computes
+- Multiple output formats (token, env, json)
+- Automatic token expiration warnings
+- File saving capabilities
+- Comprehensive cleanup capabilities
+
+**Usage:**
 ```bash
-# Generate and export token in one command
-./generate_auth_token.sh --fleet-id fleet-123 --compute-name MyServer --export
+# Generate token
+./generate_auth_token.sh --fleet-id fleet-12345678-1234-1234-1234-123456789012 --compute-name MyCompute
+
+# Export as environment variable
+./generate_auth_token.sh -f fleet-12345678-1234-1234-1234-123456789012 -c MyCompute -e
+
+# Save to file
+./generate_auth_token.sh -f fleet-12345678-1234-1234-1234-123456789012 -c MyCompute -s token.txt
+
+# Cleanup operations
+./generate_auth_token.sh --cleanup env
+./generate_auth_token.sh --cleanup all
+./generate_auth_token.sh --cleanup file --cleanup-file token.txt
 ```
 
-#### 3. Save Token to File
+## Quick Start Guide
 
+### 1. Prerequisites
+- AWS CLI installed and configured
+- EC2 instance running with public IP
+- GameLift Anywhere fleet created
+- `jq` installed (for JSON parsing)
+
+### 2. Basic Setup
 ```bash
-# Save token to a secure file
-./generate_auth_token.sh --fleet-id fleet-123 --compute-name MyServer --save /path/to/token.txt
+# Navigate to the scripts directory
+cd scripts/gamelift/
+
+# Set up a game server (this does everything)
+./setup_game_server.sh --instance-id i-1234567890abcdef0 --fleet-id fleet-12345678-1234-1234-1234-123456789012
+
+# Copy the generated startup script to your EC2 instance
+scp output/start_game_server.sh ec2-user@your-instance-ip:/local/game/
+
+# SSH into your EC2 instance and run the startup script
+ssh ec2-user@your-instance-ip
+cd /local/game/
+./start_game_server.sh
 ```
 
-#### 4. Use with Game Server Startup
-
+### 3. Manual Setup (Step by Step)
 ```bash
-#!/bin/bash
-# Get token and start game server
-AUTH_TOKEN=$(./generate_auth_token.sh --fleet-id fleet-123 --compute-name MyServer)
-export GAMELIFT_SDK_AUTH_TOKEN="$AUTH_TOKEN"
-./YourGameServer
+# Step 1: Register a compute
+./register_compute.sh --fleet-id fleet-12345678-1234-1234-1234-123456789012
+
+# Step 2: Generate auth token (use compute name from step 1)
+./generate_auth_token.sh --fleet-id fleet-12345678-1234-1234-1234-123456789012 --compute-name Compute-2025-01-16-14-30-25-a1b2c3d4
+
+# Step 3: Start your game server with the token
+export GAMELIFT_SDK_AUTH_TOKEN="your-generated-token"
+./FPSTemplateServer -glAnywhere=true -glAnywhereAuthToken=$GAMELIFT_SDK_AUTH_TOKEN
 ```
 
-## Command Line Options
+## Advanced Features
 
-| Option | Description | Required |
-|--------|-------------|----------|
-| `-f, --fleet-id` | GameLift fleet ID | Yes |
-| `-c, --compute-name` | Compute name | Yes |
-| `-r, --region` | AWS region (default: us-east-1) | No |
-| `-o, --output` | Output format: token, env, json (default: token) | No |
-| `-e, --export` | Export as environment variable | No |
-| `-s, --save` | Save token to file | No |
-| `-h, --help` | Show help message | No |
+### Fleet Management
+The scripts now support comprehensive fleet management operations:
+
+```bash
+# Delete a specific fleet
+./setup_game_server.sh --cleanup delete-fleet --cleanup-file fleet-12345678-1234-1234-1234-123456789012
+
+# Delete all fleets (with confirmation)
+./setup_game_server.sh --cleanup delete-all-fleets
+
+# Force delete fleet with active computes
+./setup_game_server.sh --cleanup delete-fleet-force --cleanup-file fleet-12345678-1234-1234-1234-123456789012
+
+# Force delete all fleets without confirmation
+./setup_game_server.sh --cleanup delete-all-fleets-force
+```
+
+### Environment Variable File Generation
+Generate configuration files in multiple formats for easy deployment:
+
+```bash
+# Generate .env file
+./setup_game_server.sh -i i-1234567890abcdef0 --env-formats env
+
+# Generate JSON configuration
+./setup_game_server.sh -i i-1234567890abcdef0 --env-formats json
+
+# Generate YAML configuration
+./setup_game_server.sh -i i-1234567890abcdef0 --env-formats yaml
+
+# Generate all formats
+./setup_game_server.sh -i i-1234567890abcdef0 --env-formats env,json,yaml
+```
+
+### Cleanup Operations
+Comprehensive cleanup options for different scenarios:
+
+```bash
+# Clean up temporary files only
+./setup_game_server.sh --cleanup temp
+
+# Clean up environment variables
+./setup_game_server.sh --cleanup env
+
+# Clean up output directory
+./setup_game_server.sh --cleanup output
+
+# Clean up everything
+./setup_game_server.sh --cleanup all
+
+# Clean up specific files
+./setup_game_server.sh --cleanup file --cleanup-file ./output/start_game_server.sh
+```
 
 ## Environment Variables
 
-You can set default values using environment variables:
+You can set these environment variables to provide defaults:
 
 ```bash
-export GAMELIFT_FLEET_ID="your-fleet-id"
-export GAMELIFT_COMPUTE_NAME="your-compute-name"
+export GAMELIFT_FLEET_ID="fleet-12345678-1234-1234-1234-123456789012"
+export GAMELIFT_COMPUTE_NAME="MyCompute"
+export GAMELIFT_LOCATION="custom-mygame-dev-location"
 export AWS_DEFAULT_REGION="us-east-1"
 ```
 
-Then run the script without parameters:
+## Output Files
 
-```bash
-./generate_auth_token.sh
-```
+The `setup_game_server.sh` script generates:
 
-## Output Formats
-
-### Token (default)
-```
-your-auth-token-here
-```
-
-### Environment Variable
-```
-export GAMELIFT_SDK_AUTH_TOKEN="your-auth-token-here"
-```
-
-### JSON
-```json
-{
-  "AuthToken": "your-auth-token-here",
-  "FleetId": "your-fleet-id",
-  "ComputeName": "your-compute-name",
-  "Region": "us-east-1"
-}
-```
-
-## Integration Examples
-
-### Docker Integration
-
-```bash
-# Generate token and pass to Docker container
-AUTH_TOKEN=$(./generate_auth_token.sh --fleet-id fleet-123 --compute-name MyServer)
-docker run -e GAMELIFT_SDK_AUTH_TOKEN="$AUTH_TOKEN" your-game-server-image
-```
-
-### CI/CD Pipeline
-
-```bash
-# In your CI/CD pipeline
-AUTH_TOKEN=$(./generate_auth_token.sh --fleet-id $FLEET_ID --compute-name $COMPUTE_NAME)
-echo "GAMELIFT_SDK_AUTH_TOKEN=$AUTH_TOKEN" >> $GITHUB_ENV
-```
-
-### Kubernetes Deployment
-
-```bash
-# Generate token and create Kubernetes secret
-AUTH_TOKEN=$(./generate_auth_token.sh --fleet-id fleet-123 --compute-name MyServer)
-kubectl create secret generic gamelift-auth --from-literal=token="$AUTH_TOKEN"
-```
-
-## Security Considerations
-
-1. **Token Expiration**: Auth tokens are valid for a limited time (typically 3 hours). Implement token refresh logic in your application.
-
-2. **Secure Storage**: When saving tokens to files, the script automatically sets secure permissions (600 - read/write for owner only).
-
-3. **Environment Variables**: Be careful not to log or expose environment variables containing sensitive tokens.
-
-4. **AWS Permissions**: Use IAM roles with minimal required permissions for your use case.
+- `start_game_server.sh` - Complete startup script with all GameLift configuration
+- `gamelift_config.txt` - Configuration summary and next steps
+- `gamelift.env` - Environment variables file (when using `--env-formats env`)
+- `gamelift_config.json` - JSON configuration file (when using `--env-formats json`)
+- `gamelift_config.yaml` - YAML configuration file (when using `--env-formats yaml`)
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **"Fleet ID not found"**
+1. **"Fleet not found"**
+   - Ensure the fleet ID is correct
+   - Verify the fleet is an "Anywhere" fleet type
+
+2. **"Instance not found"**
+   - Check the instance ID is correct
+   - Ensure the instance is running
+   - Verify you have permissions to access the instance
+
+3. **"No public IP"**
+   - GameLift Anywhere requires instances with public IP addresses
+   - Ensure your EC2 instance has a public IP or Elastic IP
+
+4. **"Auth token generation failed"**
+   - Make sure the compute is registered and active
+   - Check that the compute name matches exactly
+
+5. **"Fleet deletion failed"**
+   - Ensure you have proper AWS permissions for GameLift
+   - Check if the fleet has active computes (use `--force` flag if needed)
    - Verify the fleet ID is correct
-   - Ensure your AWS credentials have access to the fleet
-   - Check the AWS region
-
-2. **"AWS credentials not configured"**
-   - Run `aws configure` to set up your credentials
-   - Or use IAM roles if running on EC2
-
-3. **"jq not found"**
-   - The script will attempt to install jq automatically
-   - On unsupported systems, install jq manually
 
 ### Debug Mode
 
-To see detailed AWS CLI output, you can modify the script to remove the `2>/dev/null` redirects or add `--debug` to AWS CLI commands.
-
-## Examples
-
-Run the example script to see various usage patterns:
-
+Add `--debug` to any script to see detailed output:
 ```bash
-./example_usage.sh
+./setup_game_server.sh --instance-id i-1234567890abcdef0 --fleet-id fleet-12345678-1234-1234-1234-123456789012 --debug
 ```
 
-## Related Documentation
+## Security Notes
 
-- [AWS GameLift Developer Guide](https://docs.aws.amazon.com/gamelift/)
-- [GetComputeAuthToken API Reference](https://docs.aws.amazon.com/gameliftservers/latest/apireference/API_GetComputeAuthToken.html)
-- [GameLift SDK Documentation](https://docs.aws.amazon.com/gamelift/latest/developerguide/gamelift-supported.html)
+- Auth tokens are sensitive and expire (typically 3 hours)
+- Store tokens securely and rotate them regularly
+- Use IAM roles instead of hardcoded credentials when possible
+- Monitor compute registration and token usage
+- Fleet deletion operations are irreversible - use with caution
+- Environment variable files contain sensitive information - secure them appropriately
+- Use cleanup operations to remove temporary files and tokens when done
+
+## Support
+
+For issues with these scripts:
+1. Check the troubleshooting section above
+2. Review AWS GameLift Anywhere documentation
+3. Check AWS CloudTrail logs for API call details
+4. Verify your AWS credentials and permissions
