@@ -102,7 +102,7 @@ if [ -z "$FLEET_ID" ]; then
     echo "Creating fleet: $FLEET_NAME"
     FLEET_ID=$(aws gamelift create-fleet --name $FLEET_NAME --compute-type ANYWHERE \
              --locations "Location=$LOCATION_NAME" \
-             --runtime-configuration "ServerProcesses=[{LaunchPath=/local/game/FPSTemplate/Binaries/Linux/FPSTemplateServer,ConcurrentExecutions=1,Parameters=-logFile /local/game/logs/myserver1935.log -port 1935}]" \
+             --runtime-configuration "ServerProcesses=[{LaunchPath=/local/game/FPSTemplateServer,ConcurrentExecutions=1,Parameters=-logFile /local/game/logs/myserver1935.log -port 1935}]" \
              --anywhere-configuration Cost=0.2 \
              --query 'FleetAttributes.FleetId' --output text)
 else
