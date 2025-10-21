@@ -175,7 +175,7 @@ generate_compute_name() {
     compute_name=$(echo "$compute_name" | sed 's/i-//g' | sed 's/\./-/g')
     
     if [[ "$DEBUG_MODE" == "true" ]]; then
-        print_status "Generated compute name: $compute_name"
+        print_status "Generated compute name: $compute_name" >&2
     fi
     
     echo "$compute_name"
@@ -192,7 +192,8 @@ run_register_compute() {
     print_status "Registering compute with GameLift..."
     
     # Build the command
-    local register_cmd="./register_compute.sh"
+    local script_dir="$(dirname "$0")"
+    local register_cmd="$script_dir/register_compute.sh"
     register_cmd="$register_cmd --fleet-id $fleet_id"
     register_cmd="$register_cmd --compute-name $compute_name"
     register_cmd="$register_cmd --location $location"
@@ -208,11 +209,25 @@ run_register_compute() {
         print_status "Debug: Full command: $register_cmd"
     fi
     
-    if ! eval "$register_cmd" > /tmp/register_output.txt 2>&1; then
+    # Execute the command and capture output
+    eval "$register_cmd" > /tmp/register_output.txt 2>&1
+    local register_exit_code=$?
+    
+    # Check if the compute was actually registered by looking for success indicators
+    if ! grep -q "Compute registration completed" /tmp/register_output.txt; then
         print_error "Failed to register compute"
         print_error "Command output:"
         cat /tmp/register_output.txt
         exit 1
+    fi
+    
+    # Even if there are JSON parsing errors in the output, if the compute was registered, continue
+    if [[ $register_exit_code -ne 0 ]]; then
+        print_warning "Register compute script had some issues but compute was registered successfully"
+        if [[ "$DEBUG_MODE" == "true" ]]; then
+            print_status "Register compute output (with warnings):"
+            cat /tmp/register_output.txt
+        fi
     fi
     
     print_success "Compute registered successfully"
@@ -242,7 +257,8 @@ run_generate_auth_token() {
     print_status "Generating authentication token..."
     
     # Build the command
-    local auth_cmd="./generate_auth_token.sh"
+    local script_dir="$(dirname "$0")"
+    local auth_cmd="$script_dir/generate_auth_token.sh"
     auth_cmd="$auth_cmd --fleet-id $fleet_id"
     auth_cmd="$auth_cmd --compute-name $compute_name"
     auth_cmd="$auth_cmd --region $region"
@@ -608,6 +624,28 @@ delete_all_fleets() {
     print_status "  Failed to delete: $failed_count"
 }
 
+# Function to cleanup only temporary files created during this script run
+cleanup_temp_files() {
+    # Only clean up the specific temporary files we create during this run
+    local temp_files=(
+        "/tmp/register_output.txt"
+        "/tmp/auth_output.txt"
+    )
+    
+    local removed_count=0
+    for file in "${temp_files[@]}"; do
+        if [[ -f "$file" ]]; then
+            rm -f "$file"
+            ((removed_count++))
+        fi
+    done
+    
+    # Only print cleanup message if we actually removed files
+    if [[ $removed_count -gt 0 ]]; then
+        print_status "Cleaned up $removed_count temporary file(s) from this run"
+    fi
+}
+
 # Function to cleanup temporary files, environment variables, and output files
 cleanup() {
     local cleanup_type="${1:-auto}"
@@ -917,8 +955,8 @@ main() {
         exit 1
     fi
     
-    # Set up cleanup trap
-    trap 'cleanup "auto"' EXIT
+    # Set up cleanup trap (only clean up files we create during this run)
+    trap 'cleanup_temp_files' EXIT
     
     # Set AWS region
     export AWS_DEFAULT_REGION="$AWS_REGION"

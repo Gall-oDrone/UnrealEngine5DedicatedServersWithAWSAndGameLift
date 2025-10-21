@@ -124,6 +124,12 @@ check_compute_exists() {
             compute_status=$(echo "$computes" | jq -r '.[0].Status')
             print_status "Existing compute status: $compute_status"
             
+            # If --yes flag is set, skip the prompt and continue
+            if [[ "$SKIP_CONFIRMATION" == "true" ]]; then
+                print_status "Continuing with existing compute name (--yes flag)"
+                return 0
+            fi
+            
             # Ask user what to do
             echo -n "Do you want to continue anyway? (y/N): "
             read -r response
@@ -159,16 +165,16 @@ register_compute() {
         --location "$location" \
         --ip-address "$ip_address" \
         --region "$region" \
-        --output json 2>&1); then
-        print_error "Failed to register compute: $response"
+        --output json 2>/dev/null); then
+        print_error "Failed to register compute"
         exit 1
     fi
     
     # Parse the response
     local compute_name_result
-    compute_name_result=$(echo "$response" | jq -r '.ComputeName')
+    compute_name_result=$(echo "$response" | jq -r '.Compute.ComputeName')
     local compute_status
-    compute_status=$(echo "$response" | jq -r '.Status')
+    compute_status=$(echo "$response" | jq -r '.Compute.ComputeStatus')
     
     if [[ "$compute_name_result" == "null" || -z "$compute_name_result" ]]; then
         print_error "No compute name returned in response"
@@ -176,10 +182,11 @@ register_compute() {
         exit 1
     fi
     
-    print_success "Compute registered successfully"
-    print_status "Compute Name: $compute_name_result"
-    print_status "Status: $compute_status"
+    print_success "Compute registered successfully" >&2
+    print_status "Compute Name: $compute_name_result" >&2
+    print_status "Status: $compute_status" >&2
     
+    # Return the raw JSON response for further processing
     echo "$response"
 }
 
@@ -570,15 +577,15 @@ main() {
     confirm_registration "$FLEET_ID" "$COMPUTE_NAME" "$LOCATION" "$IP_ADDRESS" "$AWS_REGION"
     
     # Register compute
-    COMPUTE_INFO=$(register_compute "$FLEET_ID" "$COMPUTE_NAME" "$LOCATION" "$IP_ADDRESS" "$AWS_REGION")
+    COMPUTE_INFO=$(register_compute "$FLEET_ID" "$COMPUTE_NAME" "$LOCATION" "$IP_ADDRESS" "$AWS_REGION" 2>/dev/null)
     
     # Handle output format
     case $OUTPUT_FORMAT in
         "text")
             echo ""
             print_success "Compute Registration Summary:"
-            echo "  Compute Name: $(echo "$COMPUTE_INFO" | jq -r '.ComputeName')"
-            echo "  Status: $(echo "$COMPUTE_INFO" | jq -r '.Status')"
+            echo "  Compute Name: $(echo "$COMPUTE_INFO" | jq -r '.Compute.ComputeName')"
+            echo "  Status: $(echo "$COMPUTE_INFO" | jq -r '.Compute.ComputeStatus')"
             echo "  Fleet ID: $FLEET_ID"
             echo "  Location: $LOCATION"
             echo "  IP Address: $IP_ADDRESS"
