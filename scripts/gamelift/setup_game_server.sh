@@ -189,7 +189,8 @@ run_register_compute() {
     local ip_address="$4"
     local region="$5"
     
-    print_status "Registering compute with GameLift..."
+    print_status "Registering compute with GameLift..." >&2
+    print_status "Parameters: fleet_id=$fleet_id, compute_name=$compute_name, location=$location, ip_address=$ip_address, region=$region" >&2
     
     # Build the command
     local script_dir="$(dirname "$0")"
@@ -201,48 +202,63 @@ run_register_compute() {
     register_cmd="$register_cmd --region $region"
     register_cmd="$register_cmd --yes"  # Skip confirmation
     
-    print_status "Running: $register_cmd"
+    print_status "Running: $register_cmd" >&2
+    print_status "Script directory: $script_dir" >&2
+    print_status "Register compute script path: $script_dir/register_compute.sh" >&2
+    
+    # Check if the script exists
+    if [[ ! -f "$script_dir/register_compute.sh" ]]; then
+        print_error "Register compute script not found at: $script_dir/register_compute.sh" >&2
+        print_error "Current working directory: $(pwd)" >&2
+        print_error "Script directory: $script_dir" >&2
+        exit 1
+    fi
     
     # Execute the command
-    if [[ "$DEBUG_MODE" == "true" ]]; then
-        print_status "Debug: Executing register_compute.sh command"
-        print_status "Debug: Full command: $register_cmd"
-    fi
+    print_status "Executing register_compute.sh command..." >&2
+    print_status "Full command: $register_cmd" >&2
     
     # Execute the command and capture output
     eval "$register_cmd" > /tmp/register_output.txt 2>&1
     local register_exit_code=$?
     
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        print_status "Register compute script exit code: $register_exit_code" >&2
+        print_status "Register output file size: $(wc -c < /tmp/register_output.txt 2>/dev/null || echo "0") bytes" >&2
+    fi
+    
+    # Show the output for debugging only if debug mode is enabled
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        print_status "Register compute output:" >&2
+        cat /tmp/register_output.txt >&2
+    fi
+    
     # Check if the compute was actually registered by looking for success indicators
     if ! grep -q "Compute registration completed" /tmp/register_output.txt; then
-        print_error "Failed to register compute"
-        print_error "Command output:"
-        cat /tmp/register_output.txt
+        print_error "Failed to register compute - success message not found" >&2
+        print_error "Looking for 'Compute registration completed' in output" >&2
+        print_error "Command output:" >&2
+        cat /tmp/register_output.txt >&2
         exit 1
     fi
     
     # Even if there are JSON parsing errors in the output, if the compute was registered, continue
     if [[ $register_exit_code -ne 0 ]]; then
-        print_warning "Register compute script had some issues but compute was registered successfully"
-        if [[ "$DEBUG_MODE" == "true" ]]; then
-            print_status "Register compute output (with warnings):"
-            cat /tmp/register_output.txt
-        fi
+        print_warning "Register compute script had some issues (exit code: $register_exit_code) but compute was registered successfully" >&2
     fi
     
-    print_success "Compute registered successfully"
+    print_success "Compute registered successfully" >&2
     
     # Extract compute name from output (in case it was modified)
     local registered_compute_name
-    registered_compute_name=$(grep "Compute Name:" /tmp/register_output.txt | head -1 | sed 's/.*Compute Name: //')
+    registered_compute_name=$(grep "Compute Name:" /tmp/register_output.txt | head -1 | sed 's/.*Compute Name: //' | tr -d '\r\n' | xargs)
     
-    if [[ -z "$registered_compute_name" ]]; then
+    # If the extracted name is empty or just whitespace, use the original compute name
+    if [[ -z "$registered_compute_name" || "$registered_compute_name" == "" ]]; then
         registered_compute_name="$compute_name"
-    fi
-    
-    if [[ "$DEBUG_MODE" == "true" ]]; then
-        print_status "Register compute output:"
-        cat /tmp/register_output.txt
+        print_warning "Could not extract compute name from output, using original: $compute_name" >&2
+    else
+        print_status "Extracted compute name from output: $registered_compute_name" >&2
     fi
     
     echo "$registered_compute_name"
@@ -254,7 +270,8 @@ run_generate_auth_token() {
     local compute_name="$2"
     local region="$3"
     
-    print_status "Generating authentication token..."
+    print_status "Generating authentication token..." >&2
+    print_status "Parameters: fleet_id=$fleet_id, compute_name=$compute_name, region=$region" >&2
     
     # Build the command
     local script_dir="$(dirname "$0")"
@@ -264,33 +281,55 @@ run_generate_auth_token() {
     auth_cmd="$auth_cmd --region $region"
     auth_cmd="$auth_cmd --output env"
     
-    print_status "Running: $auth_cmd"
+    print_status "Running: $auth_cmd" >&2
+    print_status "Script directory: $script_dir" >&2
+    print_status "Generate auth token script path: $script_dir/generate_auth_token.sh" >&2
     
-    # Execute the command
-    if ! eval "$auth_cmd" > /tmp/auth_output.txt 2>&1; then
-        print_error "Failed to generate auth token"
-        print_error "Command output:"
-        cat /tmp/auth_output.txt
+    # Check if the script exists
+    if [[ ! -f "$script_dir/generate_auth_token.sh" ]]; then
+        print_error "Generate auth token script not found at: $script_dir/generate_auth_token.sh" >&2
+        print_error "Current working directory: $(pwd)" >&2
+        print_error "Script directory: $script_dir" >&2
         exit 1
     fi
     
-    print_success "Auth token generated successfully"
+    # Execute the command
+    print_status "Executing generate_auth_token.sh command..." >&2
+    eval "$auth_cmd" > /tmp/auth_output.txt 2>&1
+    local auth_exit_code=$?
+    
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        print_status "Generate auth token script exit code: $auth_exit_code" >&2
+        print_status "Auth output file size: $(wc -c < /tmp/auth_output.txt 2>/dev/null || echo "0") bytes" >&2
+    fi
+    
+    # Show the output for debugging only if debug mode is enabled
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        print_status "Auth token generation output:" >&2
+        cat /tmp/auth_output.txt >&2
+    fi
+    
+    if [[ $auth_exit_code -ne 0 ]]; then
+        print_error "Failed to generate auth token (exit code: $auth_exit_code)" >&2
+        print_error "Command output:" >&2
+        cat /tmp/auth_output.txt >&2
+        exit 1
+    fi
+    
+    print_success "Auth token generated successfully" >&2
     
     # Extract the auth token
     local auth_token
     auth_token=$(grep "GAMELIFT_SDK_AUTH_TOKEN=" /tmp/auth_output.txt | sed 's/export GAMELIFT_SDK_AUTH_TOKEN="//' | sed 's/"$//')
     
     if [[ -z "$auth_token" ]]; then
-        print_error "Could not extract auth token from output"
-        print_error "Auth token generation output:"
-        cat /tmp/auth_output.txt
+        print_error "Could not extract auth token from output" >&2
+        print_error "Auth token generation output:" >&2
+        cat /tmp/auth_output.txt >&2
         exit 1
     fi
     
-    if [[ "$DEBUG_MODE" == "true" ]]; then
-        print_status "Auth token generation output:"
-        cat /tmp/auth_output.txt
-    fi
+    print_status "Successfully extracted auth token (length: ${#auth_token} characters)" >&2
     
     echo "$auth_token"
 }
@@ -1034,27 +1073,60 @@ main() {
     
     # Register compute or use existing one
     if [[ "$SKIP_REGISTRATION" == "false" ]]; then
+        print_status "Starting compute registration process..."
+        if [[ "$DEBUG_MODE" == "true" ]]; then
+            print_status "Instance ID: $INSTANCE_ID"
+            print_status "Instance Type: $INSTANCE_TYPE"
+            print_status "Instance Public IP: $INSTANCE_PUBLIC_IP"
+            print_status "Fleet ID: $FLEET_ID"
+            print_status "Location: $LOCATION"
+            print_status "AWS Region: $AWS_REGION"
+        fi
+        
         # Generate compute name
+        print_status "Generating compute name..."
         COMPUTE_NAME=$(generate_compute_name "$INSTANCE_ID" "$INSTANCE_TYPE")
         print_status "Generated compute name: $COMPUTE_NAME"
         
         # Register compute
+        if [[ "$DEBUG_MODE" == "true" ]]; then
+            print_status "Calling run_register_compute function..."
+        fi
         REGISTERED_COMPUTE_NAME=$(run_register_compute "$FLEET_ID" "$COMPUTE_NAME" "$LOCATION" "$INSTANCE_PUBLIC_IP" "$AWS_REGION")
+        if [[ "$DEBUG_MODE" == "true" ]]; then
+            print_status "Register compute function returned: $REGISTERED_COMPUTE_NAME"
+            print_status "Final compute name: $COMPUTE_NAME"
+        fi
         COMPUTE_NAME="$REGISTERED_COMPUTE_NAME"
     else
         print_status "Skipping compute registration, using existing compute: $COMPUTE_NAME"
     fi
     
     # Generate auth token
+    print_status "Starting auth token generation..."
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        print_status "Fleet ID: $FLEET_ID"
+        print_status "Compute Name: $COMPUTE_NAME"
+        print_status "AWS Region: $AWS_REGION"
+    fi
     AUTH_TOKEN=$(run_generate_auth_token "$FLEET_ID" "$COMPUTE_NAME" "$AWS_REGION")
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        print_status "Generated auth token: ${AUTH_TOKEN:0:20}..."
+    fi
     
     # Create startup script
+    print_status "Creating startup script..."
     STARTUP_SCRIPT="$OUTPUT_DIR/start_game_server.sh"
     create_startup_script "$FLEET_ID" "$COMPUTE_NAME" "$AUTH_TOKEN" "$INSTANCE_PUBLIC_IP" "$AWS_REGION" "$STARTUP_SCRIPT"
     
     # Generate environment variable files if requested
     if [[ -n "$ENV_FORMATS" ]]; then
+        print_status "Generating environment files..."
+        print_status "Requested formats: $ENV_FORMATS"
+        print_status "Output directory: $OUTPUT_DIR"
         generate_env_files "$FLEET_ID" "$COMPUTE_NAME" "$AUTH_TOKEN" "$AWS_REGION" "$OUTPUT_DIR" "$ENV_FORMATS"
+    else
+        print_status "No environment formats requested, skipping environment file generation"
     fi
     
     # Create configuration summary

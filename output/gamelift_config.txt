@@ -1,0 +1,21 @@
+GameLift Anywhere Configuration
+==============================
+
+Instance Information:
+- Instance ID: i-0898c4db3aa69497b
+- Public IP: 98.87.3.91
+- Private IP: 172.31.45.126
+- Instance Type: m6i.large
+- Availability Zone: us-east-1b
+
+GameLift Configuration:
+- Fleet ID: fleet-a739a48a-0709-46f1-9715-d1a9bd277a58
+- Compute Name: Compute-0898c4db3aa69497b-m6i-large-20251021-141719
+- Location: custom-mygame-dev-location
+- Region: us-east-1
+- Auth Token: 49f8f0b8-6858-4a08-944e-a68a1a6dca5a
+
+Generated Files:
+- Startup Script: ./output/start_game_server.sh
+- Config Summary: ./output/gamelift_config.txt
+
