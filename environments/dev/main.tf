@@ -115,4 +115,21 @@ module "monitoring" {
   log_retention_days        = var.log_retention_days
   alarm_actions             = var.enable_sns_notifications ? [module.monitoring.sns_topic_arn] : []
   common_tags               = local.common_tags
-} 
+}
+
+# Lambda module
+module "lambda" {
+  source = "../../modules/lambda"
+
+  project_name         = var.project_name
+  environment          = "dev"
+  aws_region           = var.aws_region
+  common_tags          = local.common_tags
+  
+  enable_python_lambda = true
+  enable_go_lambda     = true
+  enable_api_gateway   = true
+  
+  lambda_timeout       = 30
+  lambda_memory_size   = 256
+}

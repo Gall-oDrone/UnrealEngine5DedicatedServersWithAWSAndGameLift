@@ -1,0 +1,16 @@
+# Python Lambda Dependencies
+# Add your project dependencies here
+
+# AWS SDK for Python (boto3)
+boto3>=1.28.0
+botocore>=1.31.0
+
+# JSON utilities (built-in, but good to document)
+# json
+
+# For working with dates and times
+# python-dateutil>=2.8.2
+
+# For environment variable management
+# python-dotenv>=1.0.0
+
