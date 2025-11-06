@@ -15,6 +15,7 @@ public class FPSTemplate : ModuleRules
         if (Target.Type == TargetType.Server)
         {
             PublicDependencyModuleNames.Add("GameLiftServerSDK");
+            PublicDependencyModuleNames.Add("DedicatedServers");
         }
         else
         {
