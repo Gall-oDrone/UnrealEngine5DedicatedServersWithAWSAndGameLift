@@ -2,10 +2,11 @@
 # Minimal Windows Setup Script with SSM Agent Verification
 # Only sets admin password and ensures SSM Agent is running
 
-# Set Administrator password if provided
-$adminPassword = "${admin_password}"
-if ($adminPassword -ne "") {
+# Set Administrator password (decoded from Base64 to preserve special characters exactly)
+$adminPasswordB64 = "${admin_password_b64}"
+if ($adminPasswordB64 -ne "") {
     Write-Output "Setting Administrator password"
+    $adminPassword = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($adminPasswordB64))
     $securePassword = ConvertTo-SecureString -String $adminPassword -AsPlainText -Force
     Set-LocalUser -Name "Administrator" -Password $securePassword
     Write-Output "Administrator password set successfully"

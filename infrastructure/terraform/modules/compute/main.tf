@@ -20,12 +20,12 @@ data "aws_ami" "windows_server" {
   count       = var.custom_ami_id == "" ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
-  
+
   filter {
     name   = "name"
     values = ["Windows_Server-2022-English-Full-Base-*"]
   }
-  
+
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
@@ -34,7 +34,8 @@ data "aws_ami" "windows_server" {
 
 # Local value to determine which AMI to use
 locals {
-  ami_id = var.custom_ami_id != "" ? var.custom_ami_id : data.aws_ami.windows_server[0].id
+  ami_id                   = var.custom_ami_id != "" ? var.custom_ami_id : data.aws_ami.windows_server[0].id
+  effective_admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
 }
 
 # Security Group for EC2 instances
@@ -194,7 +195,7 @@ resource "aws_iam_role_policy" "ssm_policy" {
           "ssm:DescribeDocument",
           "ssm:GetDocument",
           "ssm:ListDocuments",
-          
+
           # SSM Messages for Session Manager
           "ssmmessages:CreateControlChannel",
           "ssmmessages:CreateDataChannel",
@@ -217,17 +218,17 @@ resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
 # Spot Instance Request (if spot is enabled)
 resource "aws_spot_instance_request" "ue5_server_spot" {
   count = var.enable_spot_instance ? 1 : 0
-  
+
   ami                    = local.ami_id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.ec2.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
   key_name               = var.key_pair_name
-  
+
   spot_price = var.spot_max_price
   spot_type  = "one-time"
-  
+
   root_block_device {
     volume_type = "gp3"
     volume_size = var.root_volume_size
@@ -235,7 +236,7 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
-  admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
+    admin_password_b64 = base64encode(local.effective_admin_password)
   })
 
   metadata_options {
@@ -251,7 +252,7 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
 # Regular On-Demand Instance (if spot is not enabled)
 resource "aws_instance" "ue5_server" {
   count = var.enable_spot_instance ? 0 : 1
-  
+
   ami                    = local.ami_id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
@@ -266,7 +267,7 @@ resource "aws_instance" "ue5_server" {
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
-  admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
+    admin_password_b64 = base64encode(local.effective_admin_password)
   })
 
   metadata_options {
@@ -284,7 +285,7 @@ resource "aws_instance" "ue5_server" {
 # EBS Volume for root (if using snapshot)
 resource "aws_ebs_volume" "root_volume" {
   count = var.root_volume_snapshot_id != "" ? 1 : 0
-  
+
   availability_zone = var.availability_zone
   type              = "gp3"
   size              = var.root_volume_size
@@ -312,7 +313,7 @@ resource "aws_ebs_volume" "data_volume" {
 # Fast Snapshot Restore for data volume (if enabled)
 resource "aws_ebs_fast_snapshot_restore" "data_volume_fsr" {
   count = var.data_volume_snapshot_fsr && var.data_volume_snapshot_id != "" ? 1 : 0
-  
+
   availability_zone = var.availability_zone
   snapshot_id       = var.data_volume_snapshot_id
 }
