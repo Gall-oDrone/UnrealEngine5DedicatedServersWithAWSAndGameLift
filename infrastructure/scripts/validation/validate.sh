@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-ENVIRONMENTS_DIR="$PROJECT_ROOT/environments"
+ENVIRONMENTS_DIR="$PROJECT_ROOT/terraform/environments"
 
 # Default values
 ENVIRONMENT="dev"
@@ -252,7 +252,7 @@ analyze_costs() {
 check_module_structure() {
     print_status "Checking module structure..."
     
-    local modules_dir="$PROJECT_ROOT/modules"
+    local modules_dir="$PROJECT_ROOT/terraform/modules"
     local missing_modules=()
     
     # Check if all required modules exist

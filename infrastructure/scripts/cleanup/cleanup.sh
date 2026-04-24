@@ -16,8 +16,8 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 TERRAFORM_DIR="$PROJECT_ROOT/terraform"
-ENVIRONMENTS_DIR="$PROJECT_ROOT/environments"
-MODULES_DIR="$PROJECT_ROOT/modules"
+ENVIRONMENTS_DIR="$PROJECT_ROOT/terraform/environments"
+MODULES_DIR="$PROJECT_ROOT/terraform/modules"
 LOG_FILE="$SCRIPT_DIR/cleanup_$(date +%Y%m%d_%H%M%S).log"
 
 # Default values

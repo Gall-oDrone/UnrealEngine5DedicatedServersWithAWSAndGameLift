@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-ENVIRONMENTS_DIR="$PROJECT_ROOT/environments"
+ENVIRONMENTS_DIR="$PROJECT_ROOT/terraform/environments"
 TERRAFORM_DIR="$ENVIRONMENTS_DIR/dev"
 
 # Default values
