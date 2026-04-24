@@ -23,6 +23,8 @@ TERRAFORM_DIR="$ENVIRONMENTS_DIR/dev"
 ENVIRONMENT="dev"
 AUTO_APPROVE=false
 SKIP_DCV_CHECK=false
+CAPACITY_RETRY_TIMEOUT_SECONDS=300
+CAPACITY_RETRY_INTERVAL_SECONDS=20
 
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -42,6 +44,48 @@ print_error() {
 
 print_progress() {
     echo -e "${CYAN}[PROGRESS]${NC} $1"
+}
+
+run_terraform_apply_with_capacity_timeout() {
+    local args=("$@")
+    local start_time
+    start_time=$(date +%s)
+
+    while true; do
+        local tmp_log
+        tmp_log=$(mktemp)
+
+        set +e
+        terraform apply "${args[@]}" 2>&1 | tee "$tmp_log"
+        local apply_exit_code=${PIPESTATUS[0]}
+        set -e
+
+        if [[ $apply_exit_code -eq 0 ]]; then
+            rm -f "$tmp_log"
+            return 0
+        fi
+
+        if rg -i "insufficientinstancecapacity|insufficient instance capacity|server\\.insufficientinstancecapacity" "$tmp_log" >/dev/null 2>&1; then
+            local now
+            now=$(date +%s)
+            local elapsed=$((now - start_time))
+            if (( elapsed >= CAPACITY_RETRY_TIMEOUT_SECONDS )); then
+                print_error "EC2 capacity was unavailable for $elapsed seconds. Stopping retries."
+                print_error "Root cause: AWS reported insufficient capacity for requested instance placement/type."
+                rm -f "$tmp_log"
+                return 1
+            fi
+
+            local remaining=$((CAPACITY_RETRY_TIMEOUT_SECONDS - elapsed))
+            print_warning "AWS reported insufficient capacity. Retrying in ${CAPACITY_RETRY_INTERVAL_SECONDS}s (${remaining}s remaining)..."
+            rm -f "$tmp_log"
+            sleep "$CAPACITY_RETRY_INTERVAL_SECONDS"
+            continue
+        fi
+
+        rm -f "$tmp_log"
+        return "$apply_exit_code"
+    done
 }
 
 # Function to show usage
@@ -332,14 +376,22 @@ deploy_infrastructure() {
     fi
     
     terraform init -upgrade
-    terraform apply -target=module.networking -target=module.security $apply_args
+    if [[ -n "$apply_args" ]]; then
+        run_terraform_apply_with_capacity_timeout -target=module.networking -target=module.security "$apply_args"
+    else
+        run_terraform_apply_with_capacity_timeout -target=module.networking -target=module.security
+    fi
     
     print_success "Network infrastructure deployed"
     
     # Stage 2: Compute Infrastructure
     print_info "📦 Stage 2: Deploying compute infrastructure (EC2 instance with DCV setup)..."
     
-    terraform apply -target=module.compute $apply_args
+    if [[ -n "$apply_args" ]]; then
+        run_terraform_apply_with_capacity_timeout -target=module.compute "$apply_args"
+    else
+        run_terraform_apply_with_capacity_timeout -target=module.compute
+    fi
     
     # Get instance details
     INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || echo "")
@@ -366,7 +418,11 @@ deploy_infrastructure() {
     # Stage 4: Deploy Monitoring
     print_info "📦 Stage 4: Deploying monitoring infrastructure..."
     
-    terraform apply $apply_args
+    if [[ -n "$apply_args" ]]; then
+        run_terraform_apply_with_capacity_timeout "$apply_args"
+    else
+        run_terraform_apply_with_capacity_timeout
+    fi
     
     print_success "Full infrastructure deployed"
     

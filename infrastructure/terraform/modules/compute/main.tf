@@ -7,12 +7,13 @@ data "aws_caller_identity" "current" {}
 
 # Random password for Windows Administrator
 resource "random_password" "windows_admin" {
-  count   = var.admin_password == "" ? 1 : 0
-  length  = 16
-  special = true
-  upper   = true
-  lower   = true
-  numeric = true
+  count            = var.admin_password == "" ? 1 : 0
+  length           = 16
+  special          = true
+  override_special = "!@#_-"
+  upper            = true
+  lower            = true
+  numeric          = true
 }
 
 # Data source for Windows AMI (only used if custom_ami_id is not provided)
