@@ -102,6 +102,7 @@ OPTIONS:
     --skip-dcv-check        Skip DCV connectivity check
     -d, --destroy           Destroy the infrastructure
     -p, --password          Retrieve Windows Administrator password only
+    -r, --reset-password    Reset Windows Administrator password via SSM
 
 EXAMPLES:
     $0                      Deploy dev environment with prompts
@@ -109,6 +110,7 @@ EXAMPLES:
     $0 --skip-dcv-check     Deploy without checking DCV connectivity
     $0 -d                   Destroy infrastructure
     $0 -p                   Get admin password only
+    $0 -r "MyNewPass123!"   Reset Administrator password
 
 EOF
 }
@@ -505,9 +507,84 @@ get_admin_password() {
     fi
 }
 
+reset_admin_password() {
+    local new_password="$1"
+    cd "$TERRAFORM_DIR"
+
+    if [[ -z "$new_password" ]]; then
+        print_error "Password value cannot be empty"
+        exit 1
+    fi
+
+    local instance_id
+    instance_id=$(terraform output -raw instance_id 2>/dev/null || echo "")
+    if [[ -z "$instance_id" ]]; then
+        print_error "Could not determine instance ID from Terraform output"
+        exit 1
+    fi
+
+    print_info "🔐 Resetting Administrator password on instance $instance_id..."
+
+    local password_b64
+    password_b64=$(printf '%s' "$new_password" | base64 | tr -d '\n')
+
+    local command_id
+    command_id=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunPowerShellScript" \
+        --comment "Reset local Administrator password" \
+        --parameters "commands=[\"\\$p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$password_b64'))\",\"\\$secure=ConvertTo-SecureString -String \\$p -AsPlainText -Force\",\"Set-LocalUser -Name 'Administrator' -Password \\$secure\",\"Write-Output 'Password reset completed'\"]" \
+        --query "Command.CommandId" \
+        --output text 2>/dev/null || echo "")
+
+    if [[ -z "$command_id" ]]; then
+        print_error "Failed to submit SSM password reset command"
+        exit 1
+    fi
+
+    local max_wait=180
+    local elapsed=0
+    local interval=5
+
+    while (( elapsed < max_wait )); do
+        local status
+        status=$(aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$instance_id" \
+            --query "Status" \
+            --output text 2>/dev/null || echo "Pending")
+
+        case "$status" in
+            Success)
+                print_success "✅ Password reset completed successfully"
+                echo "  - Username: Administrator"
+                echo "  - Password: $new_password"
+                return 0
+                ;;
+            Failed|Cancelled|TimedOut)
+                print_error "Password reset failed with status: $status"
+                aws ssm get-command-invocation \
+                    --command-id "$command_id" \
+                    --instance-id "$instance_id" \
+                    --query "[StandardOutputContent,StandardErrorContent]" \
+                    --output text 2>/dev/null || true
+                exit 1
+                ;;
+        esac
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    print_error "Timed out waiting for password reset command to finish"
+    exit 1
+}
+
 # Parse command line arguments
 DESTROY=false
 GET_PASSWORD=false
+RESET_PASSWORD=false
+NEW_PASSWORD=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
@@ -535,6 +612,15 @@ while [[ $# -gt 0 ]]; do
             GET_PASSWORD=true
             shift
             ;;
+        -r|--reset-password)
+            if [[ $# -lt 2 ]]; then
+                print_error "Missing value for --reset-password"
+                exit 1
+            fi
+            RESET_PASSWORD=true
+            NEW_PASSWORD="$2"
+            shift 2
+            ;;
         *)
             print_error "Unknown option: $1"
             show_usage
@@ -554,6 +640,8 @@ main() {
     if [[ "$GET_PASSWORD" == true ]]; then
         # Just retrieve password
         get_admin_password
+    elif [[ "$RESET_PASSWORD" == true ]]; then
+        reset_admin_password "$NEW_PASSWORD"
     elif [[ "$DESTROY" == true ]]; then
         cd "$TERRAFORM_DIR"
         local destroy_args=""
