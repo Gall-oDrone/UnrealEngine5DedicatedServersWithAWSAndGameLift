@@ -78,26 +78,28 @@ module "security" {
 module "compute" {
   source = "../../modules/compute"
 
-  project_name             = var.project_name
-  environment              = "dev"
-  vpc_id                   = module.networking.vpc_id
-  subnet_id                = module.networking.public_subnet_ids[0]
-  availability_zone        = data.aws_availability_zones.available.names[0]
-  instance_type            = var.instance_type
-  key_pair_name            = var.key_pair_name
-  root_volume_size         = var.root_volume_size
-  data_volume_size         = var.data_volume_size
-  allowed_cidr_blocks      = var.allowed_cidr_blocks
-  admin_password           = var.admin_password
-  unreal_engine_version    = var.unreal_engine_version
-  unreal_engine_branch     = var.unreal_engine_branch
-  enable_s3_access         = var.enable_s3_access
-  s3_bucket_name           = var.s3_bucket_name
-  root_volume_snapshot_id  = var.root_volume_snapshot_id
-  data_volume_snapshot_id  = var.data_volume_snapshot_id
-  data_volume_snapshot_fsr = var.data_volume_snapshot_fsr
-  custom_ami_id            = var.custom_ami_id
-  common_tags              = local.common_tags
+  project_name = var.project_name
+  environment  = "dev"
+  vpc_id       = module.networking.vpc_id
+  # Place compute in secondary AZ to avoid capacity exhaustion in us-east-1a.
+  subnet_id                         = module.networking.public_subnet_ids[1]
+  availability_zone                 = data.aws_availability_zones.available.names[1]
+  instance_type                     = var.instance_type
+  key_pair_name                     = var.key_pair_name
+  root_volume_size                  = var.root_volume_size
+  data_volume_size                  = var.data_volume_size
+  allowed_cidr_blocks               = var.allowed_cidr_blocks
+  admin_password                    = var.admin_password
+  admin_password_ssm_parameter_name = var.admin_password_ssm_parameter_name
+  unreal_engine_version             = var.unreal_engine_version
+  unreal_engine_branch              = var.unreal_engine_branch
+  enable_s3_access                  = var.enable_s3_access
+  s3_bucket_name                    = var.s3_bucket_name
+  root_volume_snapshot_id           = var.root_volume_snapshot_id
+  data_volume_snapshot_id           = var.data_volume_snapshot_id
+  data_volume_snapshot_fsr          = var.data_volume_snapshot_fsr
+  custom_ami_id                     = var.custom_ami_id
+  common_tags                       = local.common_tags
 }
 
 # Monitoring module

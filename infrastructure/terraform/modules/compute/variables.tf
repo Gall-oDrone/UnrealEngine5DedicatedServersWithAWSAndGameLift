@@ -143,6 +143,12 @@ variable "admin_password" {
   sensitive   = true
 }
 
+variable "admin_password_ssm_parameter_name" {
+  description = "SSM SecureString parameter name containing the Windows Administrator password (takes precedence when set)"
+  type        = string
+  default     = ""
+}
+
 variable "root_volume_snapshot_id" {
   description = "Snapshot ID for root volume (leave empty to create new volume)"
   type        = string

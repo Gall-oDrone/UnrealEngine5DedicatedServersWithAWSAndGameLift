@@ -45,8 +45,12 @@ output "dcv_port" {
 
 output "windows_admin_password" {
   description = "Windows Administrator password"
-  value       = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
-  sensitive   = true
+  value = (
+    var.admin_password_ssm_parameter_name != "" ?
+    data.aws_ssm_parameter.windows_admin_password[0].value :
+    (var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result)
+  )
+  sensitive = true
 }
 
 output "data_volume_fsr_id" {

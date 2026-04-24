@@ -33,10 +33,20 @@ data "aws_ami" "windows_server" {
   }
 }
 
+data "aws_ssm_parameter" "windows_admin_password" {
+  count           = var.admin_password_ssm_parameter_name != "" ? 1 : 0
+  name            = var.admin_password_ssm_parameter_name
+  with_decryption = true
+}
+
 # Local value to determine which AMI to use
 locals {
-  ami_id                   = var.custom_ami_id != "" ? var.custom_ami_id : data.aws_ami.windows_server[0].id
-  effective_admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
+  ami_id = var.custom_ami_id != "" ? var.custom_ami_id : data.aws_ami.windows_server[0].id
+  effective_admin_password = (
+    var.admin_password_ssm_parameter_name != "" ?
+    data.aws_ssm_parameter.windows_admin_password[0].value :
+    (var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result)
+  )
 }
 
 # Security Group for EC2 instances
@@ -195,6 +205,7 @@ resource "aws_iam_role_policy" "ssm_policy" {
           "ssm:DescribeDocumentParameters",
           "ssm:DescribeDocument",
           "ssm:GetDocument",
+          "ssm:GetParameter",
           "ssm:ListDocuments",
 
           # SSM Messages for Session Manager
@@ -237,7 +248,8 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
-    admin_password_b64 = base64encode(local.effective_admin_password)
+    admin_password_b64                = base64encode(local.effective_admin_password)
+    admin_password_ssm_parameter_name = var.admin_password_ssm_parameter_name
   })
 
   metadata_options {
@@ -268,7 +280,8 @@ resource "aws_instance" "ue5_server" {
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
-    admin_password_b64 = base64encode(local.effective_admin_password)
+    admin_password_b64                = base64encode(local.effective_admin_password)
+    admin_password_ssm_parameter_name = var.admin_password_ssm_parameter_name
   })
 
   metadata_options {

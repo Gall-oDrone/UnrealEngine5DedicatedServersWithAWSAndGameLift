@@ -33,6 +33,13 @@ allowed_cidr_blocks = [
 unreal_engine_version = "5.4"
 unreal_engine_branch  = "5.4"
 
+# Administrator password source
+# Preferred: store a strong password in SSM Parameter Store (SecureString)
+# and reference it here.
+admin_password_ssm_parameter_name = "/ue5/dev/windows-admin-password"
+# Fallback: set admin_password directly only when not using SSM.
+admin_password = ""
+
 # Storage configuration
 enable_s3_access = false
 s3_bucket_name   = ""

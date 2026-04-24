@@ -22,7 +22,7 @@ variable "owner" {
 variable "custom_ami_id" {
   description = "Custom AMI ID to use instead of the default Windows Server AMI (leave empty to use default)"
   type        = string
-  default     = ""
+  default     = "ami-0a382bd9aedeb7bc3"
 }
 
 # Networking variables
@@ -54,7 +54,8 @@ variable "enable_nat_gateway" {
 variable "instance_type" {
   description = "EC2 instance type"
   type        = string
-  default     = "c5.2xlarge"
+  # Lower default to reduce InsufficientInstanceCapacity retries in dev.
+  default = "g5.24xlarge"
 }
 
 variable "key_pair_name" {
@@ -78,7 +79,7 @@ variable "data_volume_size" {
 variable "allowed_cidr_blocks" {
   description = "List of CIDR blocks allowed to access the instance"
   type        = list(string)
-  default     = ["0.0.0.0/0"]  # WARNING: This should be restricted in production
+  default     = ["0.0.0.0/0"] # WARNING: This should be restricted in production
 }
 
 # Unreal Engine variables
@@ -158,18 +159,24 @@ variable "admin_password" {
   sensitive   = true
 }
 
+variable "admin_password_ssm_parameter_name" {
+  description = "SSM SecureString parameter name for Windows Administrator password (takes precedence when set)"
+  type        = string
+  default     = ""
+}
+
 # Snapshot Configuration
 variable "root_volume_snapshot_id" {
   description = "Snapshot ID for root volume (leave empty to create new volume)"
   type        = string
-  default     = ""
+  default     = "snap-031ad7508b5e1486d"
 }
 
 variable "data_volume_snapshot_id" {
   description = "Snapshot ID for data volume (leave empty to create new volume)"
   type        = string
-  default     = ""
-} 
+  default     = "snap-0c3ad11c9c6b31d3d"
+}
 
 variable "data_volume_snapshot_fsr" {
   description = "Enabling Fast Snapshot Restore for data volume (default is false)"
