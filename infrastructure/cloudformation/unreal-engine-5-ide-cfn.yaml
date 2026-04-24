@@ -361,7 +361,7 @@ Resources:
                       local attempt=1
                       while [ $attempt -le $max_attempts ]; do
                           echo "Attempt $attempt to install packages..."
-                          if yum install -y git tar gzip vim nodejs npm make gcc g++ argon2; then
+                          if yum install -y git tar gzip vim nodejs npm make gcc g++ argon2 jq unzip zip; then
                               echo "Package installation successful"
                               return 0
                           fi
@@ -373,6 +373,24 @@ Resources:
                   }
                   
                   install_packages || error_exit $LINENO
+
+                  # Install GitHub CLI (gh)
+                  echo "Installing GitHub CLI..."
+                  max_attempts=3
+                  attempt=1
+                  while [ $attempt -le $max_attempts ]; do
+                      if dnf install -y dnf-plugins-core && \
+                         dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo && \
+                         dnf install -y gh; then
+                          if gh --version; then
+                              echo "GitHub CLI installed successfully"
+                              break
+                          fi
+                      fi
+                      echo "GitHub CLI installation attempt $attempt failed, retrying..."
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
 
                   # Install Session Manager Plugin for Amazon Linux 2023
                   echo "Installing Session Manager Plugin..."
@@ -591,6 +609,43 @@ Resources:
                   trap 'error_exit $LINENO' ERR
 
                   mkdir -p ~/environment
+                  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+                  export PATH="$HOME/.local/bin:$PATH"
+
+                  # Install Cursor CLI and ensure cursor-agent is available
+                  echo "Installing Cursor CLI..."
+                  max_attempts=3
+                  attempt=1
+                  cursor_installed=0
+                  while [ $attempt -le $max_attempts ]; do
+                      if curl -fsSL https://cursor.sh/install | sh; then
+                          hash -r
+                          if command -v cursor >/dev/null 2>&1 || command -v cursor-agent >/dev/null 2>&1 || \
+                             [ -f "$HOME/.local/bin/cursor" ] || [ -f "$HOME/.local/bin/cursor-agent" ]; then
+                              echo "Cursor CLI installed successfully"
+                              cursor_installed=1
+                              break
+                          fi
+                      fi
+                      echo "Cursor CLI installation attempt $attempt failed, retrying..."
+                      sleep 5
+                      attempt=$((attempt + 1))
+                  done
+                  if [ $cursor_installed -ne 1 ]; then
+                      echo "Cursor CLI installation failed after $max_attempts attempts"
+                      exit 1
+                  fi
+
+                  # Some installers provide "cursor" only; guarantee "cursor-agent" command.
+                  if [ -x "$HOME/.local/bin/cursor" ] && [ ! -x "$HOME/.local/bin/cursor-agent" ]; then
+                      ln -sf "$HOME/.local/bin/cursor" "$HOME/.local/bin/cursor-agent"
+                  fi
+                  if command -v cursor-agent >/dev/null 2>&1 || [ -x "$HOME/.local/bin/cursor-agent" ]; then
+                      echo "cursor-agent is available"
+                  else
+                      echo "cursor-agent is not available after installation"
+                      exit 1
+                  fi
 
                   # Install code-server if not already installed
                   codeServer=$(dnf list installed code-server 2>/dev/null | wc -l)

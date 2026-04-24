@@ -23,20 +23,13 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
-# Include override files you do wish to add to version control using negated pattern
-# !example_override.tf
-
 # Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
-# example: *tfplan*
 *.tfplan
 *.tfplan.json
 
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
-
-# Ignore lock files (optional - you may want to include these)
-# .terraform.lock.hcl
 
 # Ignore any local environment files
 .env
@@ -63,4 +56,4 @@ terraform.rc
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
