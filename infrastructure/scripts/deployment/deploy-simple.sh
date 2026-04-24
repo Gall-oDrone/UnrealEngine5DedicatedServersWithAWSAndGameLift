@@ -274,7 +274,7 @@ reset_admin_password() {
         --instance-ids "$instance_id" \
         --document-name "AWS-RunPowerShellScript" \
         --comment "Reset local Administrator password" \
-        --parameters "commands=[\"\\$p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$password_b64'))\",\"\\$secure=ConvertTo-SecureString -String \\$p -AsPlainText -Force\",\"Set-LocalUser -Name 'Administrator' -Password \\$secure\",\"Write-Output 'Password reset completed'\"]" \
+        --parameters "commands=[\"\$p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$password_b64'))\",\"\$secure=ConvertTo-SecureString -String \$p -AsPlainText -Force\",\"Set-LocalUser -Name 'Administrator' -Password \$secure\",\"Write-Output 'Password reset completed'\"]" \
         --query "Command.CommandId" \
         --output text 2>/dev/null || echo "")
 
