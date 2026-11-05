@@ -172,3 +172,8 @@ variable "data_volume_snapshot_fsr" {
   type        = bool
   default     = false
 }
+variable "allow_expensive_instance_types" {
+  description = "Explicit opt-in required to launch multi-GPU / very large instance types (e.g. g5.24xlarge ~$8/h). Guards against accidental high bills."
+  type        = bool
+  default     = false
+}

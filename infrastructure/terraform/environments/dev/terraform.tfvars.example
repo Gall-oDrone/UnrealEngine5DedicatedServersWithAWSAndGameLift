@@ -13,10 +13,15 @@ private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
 enable_nat_gateway   = false  # Set to true if you need private subnets
 
 # Compute configuration
-instance_type    = "c5.2xlarge"  # Minimum recommended for UE5 compilation
-key_pair_name    = "your-key-pair-name"  # Optional: for SSH/RDP access
-root_volume_size = 100
-data_volume_size = 500
+# g6.2xlarge  (1x L4, 8 vCPU, 32 GiB)   ~$1.00/h  <- default, good for editor/DCV work
+# g6.4xlarge  (1x L4, 16 vCPU, 64 GiB)  ~$1.35/h
+# g5.2xlarge  (1x A10G, 8 vCPU)         ~$1.21/h
+# g5.24xlarge (4x A10G, 96 vCPU)        ~$8.14/h  <- needs allow_expensive_instance_types
+instance_type                  = "g6.2xlarge"
+allow_expensive_instance_types = false # set true ONLY for g5/g6 8xlarge+ / p-family
+key_pair_name                  = "your-key-pair-name" # Optional: for SSH/RDP access
+root_volume_size               = 100
+data_volume_size               = 500 # must be >= snapshot size (500)
 
 # Custom AMI Configuration (Optional)
 # If you have a custom AMI with pre-installed tools, specify it here
@@ -55,13 +60,15 @@ enable_disk_monitoring   = false
 enable_sns_notifications = false
 notification_email       = "your-email@example.com"  # Required if enable_sns_notifications = true
 
-# Snapshot Configuration (Optional)
-# If you have existing snapshots, specify their IDs to create volumes from them
-# Leave empty to create new volumes
-root_volume_snapshot_id = ""  # e.g., "snap-0123456789abcdef0"
-data_volume_snapshot_id = ""  # e.g., "snap-0fedcba9876543210"
+# Snapshot Configuration
+# The UE 5.6 build environment is kept as an ARCHIVED snapshot (~$5/month).
+# It must be restored to the standard tier before apply (24-72 h):
+#   ./infrastructure/scripts/snapshot/manage_snapshot.sh restore --days 7 --wait
+# Terraform refuses to create resources while the snapshot is archived.
+root_volume_snapshot_id = "snap-031ad7508b5e1486d" # optional extra copy of the OS disk on /dev/sdg; "" to skip
+data_volume_snapshot_id = "snap-0777feef308067690" # UE 5.6 source build, 500 GB; "" for a blank volume
 
 # Fast Snapshot Restore Configuration
-# Enable Fast Snapshot Restore for data volume (requires data_volume_snapshot_id to be set)
-# This provides faster volume creation from snapshots but incurs additional costs
-data_volume_snapshot_fsr = false  # Set to true to enable FSR for data volume 
+# WARNING: FSR costs ~$0.75 per AZ-hour (~$540/month) while enabled. Only
+# useful if you need full disk throughput in the first minutes after boot.
+data_volume_snapshot_fsr = false

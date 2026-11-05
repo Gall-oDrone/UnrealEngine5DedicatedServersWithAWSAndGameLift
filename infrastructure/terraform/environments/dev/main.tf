@@ -2,7 +2,8 @@
 # This file orchestrates the deployment of the Unreal Engine 5 infrastructure for development
 
 terraform {
-  required_version = ">= 1.0"
+  # >= 1.10 required for S3 backend native locking (use_lockfile) - see backend.tf
+  required_version = ">= 1.10"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -99,6 +100,7 @@ module "compute" {
   data_volume_snapshot_id           = var.data_volume_snapshot_id
   data_volume_snapshot_fsr          = var.data_volume_snapshot_fsr
   custom_ami_id                     = var.custom_ami_id
+  allow_expensive_instance_types    = var.allow_expensive_instance_types
   common_tags                       = local.common_tags
 }
 

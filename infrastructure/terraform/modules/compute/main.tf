@@ -39,6 +39,23 @@ data "aws_ssm_parameter" "windows_admin_password" {
   with_decryption = true
 }
 
+# Snapshot metadata for the restore sources.
+# Used to verify the snapshots are usable (standard tier, completed) BEFORE
+# any billable resource is created. An archived snapshot cannot be used to
+# create a volume until it has been restored with
+# `aws ec2 restore-snapshot-tier` (see scripts/snapshot/manage_snapshot.sh).
+data "aws_ebs_snapshot" "data_volume" {
+  count        = var.data_volume_snapshot_id != "" ? 1 : 0
+  snapshot_ids = [var.data_volume_snapshot_id]
+  owners       = ["self"]
+}
+
+data "aws_ebs_snapshot" "root_volume" {
+  count        = var.root_volume_snapshot_id != "" ? 1 : 0
+  snapshot_ids = [var.root_volume_snapshot_id]
+  owners       = ["self"]
+}
+
 # Local value to determine which AMI to use
 locals {
   ami_id = var.custom_ami_id != "" ? var.custom_ami_id : data.aws_ami.windows_server[0].id
@@ -47,6 +64,43 @@ locals {
     data.aws_ssm_parameter.windows_admin_password[0].value :
     (var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result)
   )
+
+  # Snapshot readiness (true when no snapshot is configured).
+  data_snapshot_ready = (
+    var.data_volume_snapshot_id == "" ||
+    (data.aws_ebs_snapshot.data_volume[0].storage_tier == "standard" && data.aws_ebs_snapshot.data_volume[0].state == "completed")
+  )
+  root_snapshot_ready = (
+    var.root_volume_snapshot_id == "" ||
+    (data.aws_ebs_snapshot.root_volume[0].storage_tier == "standard" && data.aws_ebs_snapshot.root_volume[0].state == "completed")
+  )
+  data_snapshot_tier = var.data_volume_snapshot_id != "" ? data.aws_ebs_snapshot.data_volume[0].storage_tier : "n/a"
+  data_snapshot_size = var.data_volume_snapshot_id != "" ? data.aws_ebs_snapshot.data_volume[0].volume_size : 0
+
+  # Cost guard: instance families/sizes that cost several USD/hour. These are
+  # refused unless `allow_expensive_instance_types = true` is set explicitly.
+  # (A forgotten g5.24xlarge at ~$8/h cost ~$1,160 in April 2026.)
+  expensive_instance_type = can(regex(
+    "^(g[456](d|dn|e)?\\.(8|12|16|24|48)xlarge|g[456](d|dn|e)?\\.metal.*|p[2-5](d|e|en)?\\..*|inf2\\.(24|48)xlarge|trn1n?\\..*|[a-z0-9]+\\.(32|48|56|96|112|176|192)xlarge|[a-z0-9]+\\.metal.*)$",
+    var.instance_type
+  ))
+  instance_type_allowed = !local.expensive_instance_type || var.allow_expensive_instance_types
+
+  snapshot_restore_hint = <<-EOT
+    Data volume snapshot '${var.data_volume_snapshot_id}' is not usable yet (tier='${local.data_snapshot_tier}').
+    Archived snapshots must be restored to the standard tier first (takes 24-72 h):
+
+      ./infrastructure/scripts/snapshot/manage_snapshot.sh restore --days 7 --wait
+
+    or run `aws ec2 restore-snapshot-tier --snapshot-id ${var.data_volume_snapshot_id} --temporary-restore-days 7`
+    and re-run apply once `describe-snapshot-tier-status` reports 'temporary-restore-completed'.
+  EOT
+
+  instance_type_hint = <<-EOT
+    Instance type '${var.instance_type}' is classified as EXPENSIVE (multi-GPU / very large).
+    If you really need it, set `allow_expensive_instance_types = true` in terraform.tfvars
+    and make sure you run scripts/cleanup/cleanup.sh when you are done.
+  EOT
 }
 
 # Security Group for EC2 instances
@@ -260,6 +314,17 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-ue5-server-spot"
   })
+
+  lifecycle {
+    precondition {
+      condition     = local.instance_type_allowed
+      error_message = local.instance_type_hint
+    }
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+  }
 }
 
 # Regular On-Demand Instance (if spot is not enabled)
@@ -294,6 +359,18 @@ resource "aws_instance" "ue5_server" {
   })
 
   depends_on = [aws_iam_role_policy.cloudwatch_policy]
+
+  lifecycle {
+    # Fail BEFORE launching a billable instance if either guard trips.
+    precondition {
+      condition     = local.instance_type_allowed
+      error_message = local.instance_type_hint
+    }
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+  }
 }
 
 # EBS Volume for root (if using snapshot)
@@ -309,9 +386,20 @@ resource "aws_ebs_volume" "root_volume" {
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-root-volume"
   })
+
+  lifecycle {
+    precondition {
+      condition     = local.root_snapshot_ready
+      error_message = "Root volume snapshot '${var.root_volume_snapshot_id}' is not in the standard tier / completed state. Restore it before applying."
+    }
+  }
 }
 
 # EBS Volume for data
+# When `data_volume_snapshot_id` is set this volume is a RESTORE of the
+# Unreal Engine 5.6 source build (VS2022, UE 5.6 compiled from GitHub source,
+# NVIDIA drivers, installers). The canonical snapshot lives in the EBS
+# *archive* tier and must be temporarily/permanently restored before apply.
 resource "aws_ebs_volume" "data_volume" {
   availability_zone = var.availability_zone
   type              = "gp3"
@@ -320,16 +408,40 @@ resource "aws_ebs_volume" "data_volume" {
   snapshot_id       = var.data_volume_snapshot_id != "" ? var.data_volume_snapshot_id : null
 
   tags = merge(var.common_tags, {
-    Name = "${var.project_name}-data-volume"
+    Name           = "${var.project_name}-data-volume"
+    SourceSnapshot = var.data_volume_snapshot_id != "" ? var.data_volume_snapshot_id : "none"
+    # Read by scripts/cleanup/cleanup.sh: volumes created from the archived
+    # snapshot are safe to delete on teardown because the snapshot persists.
+    RestorableFromSnapshot = var.data_volume_snapshot_id != "" ? "true" : "false"
   })
+
+  lifecycle {
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+    precondition {
+      condition     = var.data_volume_size >= local.data_snapshot_size
+      error_message = "data_volume_size (${var.data_volume_size} GB) must be >= the snapshot size (${local.data_snapshot_size} GB)."
+    }
+  }
 }
 
 # Fast Snapshot Restore for data volume (if enabled)
+# WARNING: FSR is billed per AZ-hour (~$0.75/h => ~$540/month) for as long as
+# it is enabled. cleanup.sh disables any FSR left behind.
 resource "aws_ebs_fast_snapshot_restore" "data_volume_fsr" {
   count = var.data_volume_snapshot_fsr && var.data_volume_snapshot_id != "" ? 1 : 0
 
   availability_zone = var.availability_zone
   snapshot_id       = var.data_volume_snapshot_id
+
+  lifecycle {
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+  }
 }
 
 # EBS Volume Attachment for on-demand instance

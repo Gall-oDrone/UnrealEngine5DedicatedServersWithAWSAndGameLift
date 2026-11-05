@@ -56,4 +56,18 @@ output "windows_admin_password" {
 output "data_volume_fsr_id" {
   description = "ID of the Fast Snapshot Restore for data volume (if enabled)"
   value       = var.data_volume_snapshot_fsr && var.data_volume_snapshot_id != "" ? aws_ebs_fast_snapshot_restore.data_volume_fsr[0].id : null
-} 
+}
+output "data_volume_snapshot_id" {
+  description = "Snapshot the data volume was restored from (empty when created blank)"
+  value       = var.data_volume_snapshot_id
+}
+
+output "data_volume_snapshot_tier" {
+  description = "Storage tier of the data volume source snapshot at plan time (standard|archive|n/a)"
+  value       = local.data_snapshot_tier
+}
+
+output "instance_type" {
+  description = "Instance type that was launched"
+  value       = var.instance_type
+}

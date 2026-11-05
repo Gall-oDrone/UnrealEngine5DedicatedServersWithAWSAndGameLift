@@ -92,11 +92,26 @@ output "windows_admin_password" {
 output "estimated_monthly_cost" {
   description = "Estimated monthly cost for the infrastructure"
   value = {
-    ec2_instance = "~$300-500/month (varies by instance type and usage)"
-    ebs_volumes  = "~$50-100/month (varies by volume size)"
-    nat_gateway  = var.enable_nat_gateway ? "~$45/month" : "$0"
+    ec2_instance  = "~$300-500/month (varies by instance type and usage)"
+    ebs_volumes   = "~$50-100/month (varies by volume size)"
+    nat_gateway   = var.enable_nat_gateway ? "~$45/month" : "$0"
     vpc_flow_logs = var.enable_vpc_flow_logs ? "~$10-20/month" : "$0"
-    cloudwatch   = "~$5-15/month"
-    total        = "~$365-680/month"
+    cloudwatch    = "~$5-15/month"
+    total         = "~$365-680/month"
   }
-} 
+}
+# Snapshot / cost-safety information
+output "data_volume_snapshot_id" {
+  description = "Snapshot the data volume was restored from"
+  value       = module.compute.data_volume_snapshot_id
+}
+
+output "data_volume_snapshot_tier" {
+  description = "Tier of the source snapshot at plan time (must be 'standard' to deploy)"
+  value       = module.compute.data_volume_snapshot_tier
+}
+
+output "instance_type" {
+  description = "Launched instance type - remember to run scripts/cleanup/cleanup.sh when done"
+  value       = module.compute.instance_type
+}
