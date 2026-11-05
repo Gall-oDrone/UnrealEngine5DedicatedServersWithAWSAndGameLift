@@ -52,9 +52,15 @@ variable "enable_nat_gateway" {
 
 # Compute variables
 variable "instance_type" {
-  description = "EC2 instance type"
+  description = "EC2 instance type. Multi-GPU / very large types (g5/g6 8xlarge+, p-family) are refused unless allow_expensive_instance_types = true."
   type        = string
   default     = "c5.2xlarge"
+}
+
+variable "allow_expensive_instance_types" {
+  description = "Must be set to true to launch multi-GPU / very large instance types (g5.24xlarge, g6.48xlarge, p4d, ...)."
+  type        = bool
+  default     = false
 }
 
 variable "key_pair_name" {
@@ -78,7 +84,7 @@ variable "data_volume_size" {
 variable "allowed_cidr_blocks" {
   description = "List of CIDR blocks allowed to access the instance"
   type        = list(string)
-  default     = ["0.0.0.0/0"]  # WARNING: This should be restricted in production
+  default     = ["0.0.0.0/0"] # WARNING: This should be restricted in production
 }
 
 # Unreal Engine variables
@@ -166,13 +172,13 @@ variable "root_volume_snapshot_id" {
 }
 
 variable "data_volume_snapshot_id" {
-  description = "Snapshot ID for data volume (leave empty to create new volume)"
+  description = "Snapshot ID for the data volume. The UE 5.6 source build is snap-0777feef308067690 (archive tier - restore with scripts/snapshot/manage_snapshot.sh before apply). Leave empty to create a blank volume."
   type        = string
   default     = ""
-} 
+}
 
 variable "data_volume_snapshot_fsr" {
-  description = "Enabling Fast Snapshot Restore for data volume (default is false)"
+  description = "Enable Fast Snapshot Restore for the data volume. WARNING: ~$0.75/h per AZ (~$540/month) while enabled."
   type        = bool
   default     = false
-} 
+}

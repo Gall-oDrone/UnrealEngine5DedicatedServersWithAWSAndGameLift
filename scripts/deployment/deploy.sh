@@ -319,10 +319,106 @@ test_dcv_connectivity() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Pre-flight helpers
+# ---------------------------------------------------------------------------
+SNAPSHOT_SCRIPT="$PROJECT_ROOT/scripts/snapshot/manage_snapshot.sh"
+CLEANUP_SCRIPT="$PROJECT_ROOT/scripts/cleanup/cleanup.sh"
+
+# Read an effective variable value: terraform.tfvars overrides variables.tf default.
+tf_var() {
+    local name="$1" val=""
+    if [[ -f "$TERRAFORM_DIR/terraform.tfvars" ]]; then
+        val=$(grep -E "^\s*${name}\s*=" "$TERRAFORM_DIR/terraform.tfvars" | sed -E 's/#.*$//' | sed -E 's/.*=\s*//; s/^"//; s/"\s*$//' | head -1)
+    fi
+    if [[ -z "$val" && -f "$TERRAFORM_DIR/variables.tf" ]]; then
+        val=$(awk "/variable \"${name}\"/,/^}/" "$TERRAFORM_DIR/variables.tf" | grep -E '^\s*default' | sed -E 's/#.*$//' | sed -E 's/.*=\s*//; s/^"//; s/"\s*$//' | head -1)
+    fi
+    echo "$val"
+}
+
+terraform_init_backend() {
+    local args=(-input=false -upgrade)
+    if [[ -f "$TERRAFORM_DIR/backend.hcl" ]]; then
+        print_info "Using S3 remote state ($(grep -E '^\s*bucket' "$TERRAFORM_DIR/backend.hcl" | sed -E 's/.*"([^"]*)".*/\1/'))"
+        args+=(-backend-config=backend.hcl)
+    else
+        print_warning "No backend.hcl - using LOCAL state. Cleanup from another machine will not work."
+    fi
+    terraform init "${args[@]}"
+}
+
+# Refuse to deploy while the data-volume snapshot is archived; offer to restore.
+preflight_snapshot() {
+    local snap
+    snap=$(tf_var data_volume_snapshot_id)
+    [[ -z "$snap" ]] && { print_info "No data volume snapshot configured (blank volume)."; return 0; }
+    [[ -x "$SNAPSHOT_SCRIPT" ]] || { print_warning "snapshot helper not found; Terraform preconditions will still guard."; return 0; }
+
+    print_info "📀 Checking data volume snapshot $snap ..."
+    set +e
+    SNAPSHOT_ID="$snap" "$SNAPSHOT_SCRIPT" status
+    local rc=$?
+    set -e
+    [[ $rc -eq 0 ]] && return 0
+    if [[ $rc -eq 2 ]]; then
+        print_error "Snapshot $snap does not exist. Fix data_volume_snapshot_id in terraform.tfvars."
+        exit 1
+    fi
+    print_warning "The snapshot is ARCHIVED. Restoring takes 24-72 h; nothing can be deployed until then."
+    if [[ "$AUTO_APPROVE" == true ]]; then
+        print_error "Non-interactive mode: run '$SNAPSHOT_SCRIPT restore --days 7 --wait' first."
+        exit 1
+    fi
+    read -r -p "Start a TEMPORARY 7-day restore now (≈\$13 one-time)? [y/N]: " ans
+    if [[ "$ans" =~ ^[Yy] ]]; then
+        SNAPSHOT_ID="$snap" "$SNAPSHOT_SCRIPT" restore --days 7 --yes
+        print_info "Re-run this script once '$SNAPSHOT_SCRIPT status' reports the standard tier"
+        print_info "(or run '$SNAPSHOT_SCRIPT wait' to block until it does)."
+    fi
+    exit 1
+}
+
+# Show what the instance will cost and how to tear it down BEFORE spending.
+preflight_cost_banner() {
+    local itype price
+    itype=$(tf_var instance_type)
+    price=$(aws pricing get-products --region us-east-1 --service-code AmazonEC2 \
+        --filters "Type=TERM_MATCH,Field=instanceType,Value=$itype" \
+                  "Type=TERM_MATCH,Field=regionCode,Value=${AWS_REGION:-us-east-1}" \
+                  "Type=TERM_MATCH,Field=operatingSystem,Value=Windows" \
+                  "Type=TERM_MATCH,Field=tenancy,Value=Shared" \
+                  "Type=TERM_MATCH,Field=preInstalledSw,Value=NA" \
+                  "Type=TERM_MATCH,Field=capacitystatus,Value=Used" \
+                  "Type=TERM_MATCH,Field=licenseModel,Value=No License required" \
+        --query 'PriceList[0]' --output text 2>/dev/null \
+        | jq -r '.terms.OnDemand | to_entries[0].value.priceDimensions | to_entries[0].value.pricePerUnit.USD' 2>/dev/null || echo "")
+    echo ""
+    print_warning "════════════════════════════════════════════════════════════"
+    print_warning "  💸 COST CHECK"
+    print_warning "  Instance type : $itype"
+    if [[ -n "$price" && "$price" != "null" ]]; then
+        print_warning "  On-demand     : \$$price/hour  ≈ \$$(awk "BEGIN{printf \"%.0f\", $price*24}")/day  ≈ \$$(awk "BEGIN{printf \"%.0f\", $price*24*30}")/month if left running"
+    fi
+    print_warning "  Data volume   : $(tf_var data_volume_size) GB gp3 ≈ \$$(awk "BEGIN{printf \"%.0f\", $(tf_var data_volume_size)*0.08}")/month"
+    print_warning ""
+    print_warning "  When you are done:  $CLEANUP_SCRIPT"
+    print_warning "  (verifies nothing billable is left; exit code != 0 if it is)"
+    print_warning "════════════════════════════════════════════════════════════"
+    echo ""
+    if [[ "$AUTO_APPROVE" != true ]]; then
+        read -r -p "Continue with deployment? [y/N]: " ans
+        [[ "$ans" =~ ^[Yy] ]] || { print_info "Aborted."; exit 0; }
+    fi
+}
+
 # Main deployment stages
 deploy_infrastructure() {
     cd "$TERRAFORM_DIR"
     
+    preflight_snapshot
+    preflight_cost_banner
+
     # Stage 1: Network Infrastructure
     print_info "📦 Stage 1: Deploying network infrastructure (VPC, Subnets, Security Groups)..."
     
@@ -331,7 +427,7 @@ deploy_infrastructure() {
         apply_args="-auto-approve"
     fi
     
-    terraform init -upgrade
+    terraform_init_backend
     terraform apply -target=module.networking -target=module.security $apply_args
     
     print_success "Network infrastructure deployed"
@@ -499,7 +595,17 @@ main() {
         # Just retrieve password
         get_admin_password
     elif [[ "$DESTROY" == true ]]; then
+        # Delegate to the verified cleanup: terraform destroy + tag-based sweep
+        # + verification. A bare `terraform destroy` is what left a g5.24xlarge
+        # running for 6 days in April 2026.
+        if [[ -x "$CLEANUP_SCRIPT" ]]; then
+            local cleanup_args=(-e "$ENVIRONMENT")
+            [[ "$AUTO_APPROVE" == true ]] && cleanup_args+=(--force)
+            exec "$CLEANUP_SCRIPT" "${cleanup_args[@]}"
+        fi
+        print_warning "cleanup.sh not found - falling back to plain terraform destroy (NOT verified!)"
         cd "$TERRAFORM_DIR"
+        terraform_init_backend
         local destroy_args=""
         if [[ "$AUTO_APPROVE" == true ]]; then
             destroy_args="-auto-approve"

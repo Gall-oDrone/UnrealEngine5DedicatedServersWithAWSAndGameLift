@@ -20,21 +20,68 @@ data "aws_ami" "windows_server" {
   count       = var.custom_ami_id == "" ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
-  
+
   filter {
     name   = "name"
     values = ["Windows_Server-2022-English-Full-Base-*"]
   }
-  
+
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
   }
 }
 
+# Snapshot metadata for the restore sources. Verified BEFORE any billable
+# resource is created: an archived snapshot cannot be used to create a volume
+# until restored with `aws ec2 restore-snapshot-tier`
+# (see scripts/snapshot/manage_snapshot.sh).
+data "aws_ebs_snapshot" "data_volume" {
+  count        = var.data_volume_snapshot_id != "" ? 1 : 0
+  snapshot_ids = [var.data_volume_snapshot_id]
+  owners       = ["self"]
+}
+
+data "aws_ebs_snapshot" "root_volume" {
+  count        = var.root_volume_snapshot_id != "" ? 1 : 0
+  snapshot_ids = [var.root_volume_snapshot_id]
+  owners       = ["self"]
+}
+
 # Local value to determine which AMI to use
 locals {
   ami_id = var.custom_ami_id != "" ? var.custom_ami_id : data.aws_ami.windows_server[0].id
+
+  data_snapshot_ready = (
+    var.data_volume_snapshot_id == "" ||
+    (data.aws_ebs_snapshot.data_volume[0].storage_tier == "standard" && data.aws_ebs_snapshot.data_volume[0].state == "completed")
+  )
+  root_snapshot_ready = (
+    var.root_volume_snapshot_id == "" ||
+    (data.aws_ebs_snapshot.root_volume[0].storage_tier == "standard" && data.aws_ebs_snapshot.root_volume[0].state == "completed")
+  )
+  data_snapshot_tier = var.data_volume_snapshot_id != "" ? data.aws_ebs_snapshot.data_volume[0].storage_tier : "n/a"
+  data_snapshot_size = var.data_volume_snapshot_id != "" ? data.aws_ebs_snapshot.data_volume[0].volume_size : 0
+
+  # Cost guard: multi-GPU / very large types are refused unless
+  # allow_expensive_instance_types = true (a forgotten g5.24xlarge cost ~$1,160).
+  expensive_instance_type = can(regex(
+    "^(g[456](d|dn|e)?\\.(8|12|16|24|48)xlarge|g[456](d|dn|e)?\\.metal.*|p[2-5](d|e|en)?\\..*|inf2\\.(24|48)xlarge|trn1n?\\..*|[a-z0-9]+\\.(32|48|56|96|112|176|192)xlarge|[a-z0-9]+\\.metal.*)$",
+    var.instance_type
+  ))
+  instance_type_allowed = !local.expensive_instance_type || var.allow_expensive_instance_types
+
+  snapshot_restore_hint = <<-EOT
+    Data volume snapshot '${var.data_volume_snapshot_id}' is not usable yet (tier='${local.data_snapshot_tier}').
+    Archived snapshots must be restored to the standard tier first (24-72 h):
+      ./scripts/snapshot/manage_snapshot.sh restore --days 7 --wait
+  EOT
+
+  instance_type_hint = <<-EOT
+    Instance type '${var.instance_type}' is classified as EXPENSIVE (multi-GPU / very large).
+    Set `allow_expensive_instance_types = true` in terraform.tfvars if you really need it,
+    and run scripts/cleanup/cleanup.sh when you are done.
+  EOT
 }
 
 # Security Group for EC2 instances
@@ -210,7 +257,7 @@ resource "aws_iam_role_policy" "ssm_policy" {
           "ssm:DescribeDocument",
           "ssm:GetDocument",
           "ssm:ListDocuments",
-          
+
           # SSM Messages for Session Manager
           "ssmmessages:CreateControlChannel",
           "ssmmessages:CreateDataChannel",
@@ -233,17 +280,17 @@ resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
 # Spot Instance Request (if spot is enabled)
 resource "aws_spot_instance_request" "ue5_server_spot" {
   count = var.enable_spot_instance ? 1 : 0
-  
+
   ami                    = local.ami_id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.ec2.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
   key_name               = var.key_pair_name
-  
+
   spot_price = var.spot_max_price
   spot_type  = "one-time"
-  
+
   root_block_device {
     volume_type = "gp3"
     volume_size = var.root_volume_size
@@ -251,7 +298,7 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
-  admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
+    admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
   })
 
   metadata_options {
@@ -262,12 +309,23 @@ resource "aws_spot_instance_request" "ue5_server_spot" {
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-ue5-server-spot"
   })
+
+  lifecycle {
+    precondition {
+      condition     = local.instance_type_allowed
+      error_message = local.instance_type_hint
+    }
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+  }
 }
 
 # Regular On-Demand Instance (if spot is not enabled)
 resource "aws_instance" "ue5_server" {
   count = var.enable_spot_instance ? 0 : 1
-  
+
   ami                    = local.ami_id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
@@ -282,7 +340,7 @@ resource "aws_instance" "ue5_server" {
   }
 
   user_data = templatefile("${path.module}/templates/minimal-setup.ps1", {
-  admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
+    admin_password = var.admin_password != "" ? var.admin_password : random_password.windows_admin[0].result
   })
 
   metadata_options {
@@ -295,12 +353,23 @@ resource "aws_instance" "ue5_server" {
   })
 
   depends_on = [aws_iam_role_policy.cloudwatch_policy]
+
+  lifecycle {
+    precondition {
+      condition     = local.instance_type_allowed
+      error_message = local.instance_type_hint
+    }
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+  }
 }
 
 # EBS Volume for root (if using snapshot)
 resource "aws_ebs_volume" "root_volume" {
   count = var.root_volume_snapshot_id != "" ? 1 : 0
-  
+
   availability_zone = var.availability_zone
   type              = "gp3"
   size              = var.root_volume_size
@@ -310,9 +379,17 @@ resource "aws_ebs_volume" "root_volume" {
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-root-volume"
   })
+
+  lifecycle {
+    precondition {
+      condition     = local.root_snapshot_ready
+      error_message = "Root volume snapshot '${var.root_volume_snapshot_id}' is not in the standard tier / completed state. Restore it before applying."
+    }
+  }
 }
 
-# EBS Volume for data
+# EBS Volume for data (a restore of the archived UE 5.6 snapshot when
+# data_volume_snapshot_id is set).
 resource "aws_ebs_volume" "data_volume" {
   availability_zone = var.availability_zone
   type              = "gp3"
@@ -321,16 +398,37 @@ resource "aws_ebs_volume" "data_volume" {
   snapshot_id       = var.data_volume_snapshot_id != "" ? var.data_volume_snapshot_id : null
 
   tags = merge(var.common_tags, {
-    Name = "${var.project_name}-data-volume"
+    Name                   = "${var.project_name}-data-volume"
+    SourceSnapshot         = var.data_volume_snapshot_id != "" ? var.data_volume_snapshot_id : "none"
+    RestorableFromSnapshot = var.data_volume_snapshot_id != "" ? "true" : "false"
   })
+
+  lifecycle {
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+    precondition {
+      condition     = var.data_volume_size >= local.data_snapshot_size
+      error_message = "data_volume_size (${var.data_volume_size} GB) must be >= the snapshot size (${local.data_snapshot_size} GB)."
+    }
+  }
 }
 
 # Fast Snapshot Restore for data volume (if enabled)
+# WARNING: ~$0.75 per AZ-hour (~$540/month) while enabled.
 resource "aws_ebs_fast_snapshot_restore" "data_volume_fsr" {
   count = var.data_volume_snapshot_fsr && var.data_volume_snapshot_id != "" ? 1 : 0
-  
+
   availability_zone = var.availability_zone
   snapshot_id       = var.data_volume_snapshot_id
+
+  lifecycle {
+    precondition {
+      condition     = local.data_snapshot_ready
+      error_message = local.snapshot_restore_hint
+    }
+  }
 }
 
 # EBS Volume Attachment for on-demand instance

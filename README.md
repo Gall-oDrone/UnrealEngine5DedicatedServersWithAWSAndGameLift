@@ -205,8 +205,14 @@ unreal_engine_branch  = "5.4"
 ./scripts/dcv/setup_dcv.sh                              # Setup DCV on instances
 ./scripts/dcv/dcv_install.ps1                           # DCV installation script
 
-# Infrastructure Cleanup
-./scripts/cleanup/cleanup.sh                            # Cleanup all resources
+# UE 5.6 snapshot (archived) - restore BEFORE deploying, re-archive when done
+./scripts/snapshot/manage_snapshot.sh status
+./scripts/snapshot/manage_snapshot.sh restore --days 7 --wait   # 24-72 h, ~$13 one-time
+./scripts/snapshot/manage_snapshot.sh archive                   # back to ~$5/month
+
+# Infrastructure Cleanup (terraform destroy + tag-based sweep + VERIFICATION)
+./scripts/cleanup/cleanup.sh --dry-run                  # see what would be removed
+./scripts/cleanup/cleanup.sh                            # exit code != 0 if anything billable remains
 ```
 
 ### Manual Terraform Commands
@@ -214,8 +220,8 @@ unreal_engine_branch  = "5.4"
 ```bash
 cd environments/dev
 
-# Initialize
-terraform init
+# Initialize (remote state in S3 - see backend.hcl)
+terraform init -backend-config=backend.hcl
 
 # Plan
 terraform plan
@@ -223,9 +229,26 @@ terraform plan
 # Apply
 terraform apply
 
-# Destroy
+# Destroy - prefer ./scripts/cleanup/cleanup.sh, which verifies afterwards
 terraform destroy
 ```
+
+### Restoring the UE 5.6 build environment
+
+The 500 GB data volume (VS2022, UE 5.6 compiled from GitHub source, NVIDIA
+drivers, installers) is **not** kept as a volume any more; it lives in an
+EBS snapshot in the *archive* tier:
+
+| Snapshot | Size | Tier | Cost |
+|---|---|---|---|
+| `snap-0777feef308067690` | 500 GB (≈421 GiB used) | archive | ~$5/month |
+
+Set `data_volume_snapshot_id = "snap-0777feef308067690"` in `terraform.tfvars`,
+run `./scripts/snapshot/manage_snapshot.sh restore` **1–3 days before** you
+need the machine, and deploy once `status` reports the standard tier. The
+compute module's `precondition`s refuse to create anything while the snapshot
+is archived, so a premature `apply` fails fast instead of half-deploying.
+Archive has a 90-day minimum (until **2027-02-02** for this snapshot).
 
 ## 🔒 Security Features
 
@@ -288,6 +311,21 @@ Configurable alarms for:
 3. **Optimize Storage**: Use GP3 volumes for better performance/cost
 4. **Disable NAT Gateway**: If not needed for private subnets
 5. **Monitor Usage**: Use AWS Cost Explorer
+
+### Cost Guard-rails (added after a $1,160 g5.24xlarge incident)
+
+- Multi-GPU / very large instance types are **refused** unless
+  `allow_expensive_instance_types = true` is set explicitly.
+- Terraform state lives in S3 (`environments/dev/backend.hcl`), so
+  `destroy`/cleanup works from any machine. Local state is what made the
+  previous cleanup report success while an instance kept running.
+- `scripts/cleanup/cleanup.sh` keeps state if `terraform destroy` fails,
+  sweeps the account by tag (instances, spot requests, volumes, FSR, EIPs,
+  NAT, VPC, IAM, CloudWatch, SNS, KMS), scans the region for **any** running
+  GPU instance, never deletes snapshots/AMIs unless asked, and exits
+  non-zero if anything billable remains.
+- Fast Snapshot Restore (`data_volume_snapshot_fsr`) costs ~$540/month
+  per AZ while enabled - leave it off unless you need it.
 
 ## 🔄 Automation & Scripts
 
