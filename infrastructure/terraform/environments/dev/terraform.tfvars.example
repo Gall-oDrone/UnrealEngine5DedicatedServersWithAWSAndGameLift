@@ -65,7 +65,7 @@ notification_email       = "your-email@example.com"  # Required if enable_sns_no
 # It must be restored to the standard tier before apply (24-72 h):
 #   ./infrastructure/scripts/snapshot/manage_snapshot.sh restore --days 7 --wait
 # Terraform refuses to create resources while the snapshot is archived.
-root_volume_snapshot_id = "snap-031ad7508b5e1486d" # optional extra copy of the OS disk on /dev/sdg; "" to skip
+root_volume_snapshot_id = ""                       # optional extra copy of the OS disk on /dev/sdg (AMI snapshot snap-031ad7508b5e1486d); not needed
 data_volume_snapshot_id = "snap-0777feef308067690" # UE 5.6 source build, 500 GB; "" for a blank volume
 
 # Fast Snapshot Restore Configuration

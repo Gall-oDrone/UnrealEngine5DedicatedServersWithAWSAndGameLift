@@ -95,6 +95,6 @@ terraform destroy          # prefer scripts/cleanup/cleanup.sh - it verifies aft
 
 - `environments/dev` is the Terraform root module entrypoint.
 - Shared building blocks are in `modules/*`.
-- `root_volume_snapshot_id` defaults to the AMI's own snapshot and creates an
-  *extra* 100 GB copy of the OS disk on `/dev/sdg` (~$8/month while deployed).
-  Set it to `""` if you don't need it.
+- `root_volume_snapshot_id` is empty by default. Setting it to the AMI's own
+  snapshot would create an *extra* 100 GB copy of the OS disk on `/dev/sdg`
+  (~$8/month while deployed) - the AMI already boots from that snapshot.

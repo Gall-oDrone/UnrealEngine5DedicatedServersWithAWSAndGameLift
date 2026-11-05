@@ -185,9 +185,9 @@ variable "admin_password_ssm_parameter_name" {
 # (24-72 h). Use:  ./infrastructure/scripts/snapshot/manage_snapshot.sh restore --wait
 # The compute module refuses to create resources while the snapshot is archived.
 variable "root_volume_snapshot_id" {
-  description = "Snapshot ID for an ADDITIONAL volume attached as /dev/sdg (leave empty to skip). Note: the custom AMI already boots from snap-031ad7508b5e1486d, so this duplicates the OS disk."
+  description = "Snapshot ID for an ADDITIONAL volume attached as /dev/sdg (leave empty to skip). The custom AMI already boots from snap-031ad7508b5e1486d, so setting this only duplicates the OS disk (~$8/month)."
   type        = string
-  default     = "snap-031ad7508b5e1486d"
+  default     = ""
 }
 
 variable "data_volume_snapshot_id" {
