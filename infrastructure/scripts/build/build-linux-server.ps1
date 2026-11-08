@@ -152,7 +152,8 @@ if (Test-Path (Join-Path $ProjectDir ".git")) {
 }
 & $Git -C $ProjectDir checkout --quiet --force $Ref 2>&1 | Out-File $LogFile -Append
 # If Ref is a branch, make sure it is at the remote tip.
-$isBranch = (& $Git -C $ProjectDir show-ref --verify --quiet "refs/remotes/origin/$Ref"; $LASTEXITCODE -eq 0)
+& $Git -C $ProjectDir show-ref --verify --quiet "refs/remotes/origin/$Ref"
+$isBranch = ($LASTEXITCODE -eq 0)
 if ($isBranch) { & $Git -C $ProjectDir reset --quiet --hard "origin/$Ref" 2>&1 | Out-File $LogFile -Append }
 $Sha = (& $Git -C $ProjectDir rev-parse --short HEAD).Trim()
 $Summary.Ref = $Ref; $Summary.Commit = $Sha
