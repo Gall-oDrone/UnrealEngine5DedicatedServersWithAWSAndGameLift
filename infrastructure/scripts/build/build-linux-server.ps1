@@ -208,7 +208,12 @@ function Invoke-UAT([string]$Platform) {
     if (-not $SkipCook) { $uatArgs += @("-cook", "-stage", "-pak") }
     Log "RunUAT $($uatArgs -join ' ')"
     $uatLog = Join-Path $WorkDir "uat-$Platform-$Stamp.log"
-    $p = Start-Process -FilePath $RunUAT -ArgumentList $uatArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $uatLog -RedirectStandardError "$uatLog.err"
+    # UAT (re)builds its C# tools with MSBuild, which leaves idle "node reuse" workers alive
+    # for ~15 min; `Start-Process -Wait` would wait for those descendants too. Disable node
+    # reuse and wait on the UAT process object only.
+    $env:MSBUILDDISABLENODEREUSE = "1"
+    $p = Start-Process -FilePath $RunUAT -ArgumentList $uatArgs -NoNewWindow -PassThru -RedirectStandardOutput $uatLog -RedirectStandardError "$uatLog.err"
+    $p.WaitForExit()
     if (Test-Path $uatLog) { Get-Content $uatLog -Tail 12 | ForEach-Object { Log "  uat| $_" } }
     Upload $uatLog "builds/logs/$(Split-Path $uatLog -Leaf)"
     if ($p.ExitCode -ne 0) {
