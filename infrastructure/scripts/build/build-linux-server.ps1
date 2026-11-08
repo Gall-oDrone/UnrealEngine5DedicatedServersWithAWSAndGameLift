@@ -23,7 +23,8 @@
 .PARAMETER ProjectName   .uproject name without extension (default FrontendUI).
 .PARAMETER S3Bucket      Artifacts bucket. Empty = skip upload.
 .PARAMETER ProjectsRoot  Where to clone (default <engine drive>:\UE_5_6_Projects).
-.PARAMETER AlsoWindows   Also build/stage the Win64 server (for LaunchDedicatedServer.bat PACKAGED).
+.PARAMETER Platforms     Server platforms to build, in order (default Linux). e.g. -Platforms Linux,Win64
+.PARAMETER AlsoWindows   Shorthand for -Platforms Linux,Win64.
 .PARAMETER SkipCook      Build the server binary only (quick compile check).
 #>
 [CmdletBinding()]
@@ -33,9 +34,11 @@ param(
     [string]$ProjectName  = "FrontendUI",
     [string]$S3Bucket     = "ue5-artifacts-326105557351-us-east-1",
     [string]$ProjectsRoot = "",
+    [string[]]$Platforms  = @("Linux"),
     [switch]$AlsoWindows,
     [switch]$SkipCook
 )
+if ($AlsoWindows -and ($Platforms -notcontains "Win64")) { $Platforms += "Win64" }
 
 # Native tools (git, aws, tar) write progress to stderr. Under 'Stop' PowerShell 5.1
 # turns the first such line into a terminating error, so run with 'Continue' and check
@@ -191,8 +194,8 @@ $UProject = Join-Path $ProjectDir "$ProjectName.uproject"
 if (-not (Test-Path $UProject)) { Finish "failed" "$UProject not found" }
 
 # ---------------------------------------------------------------------------------
-$RunUAT  = Join-Path $UERoot "Engine\Build\BatchFiles\RunUAT.bat"
-$Archive = Join-Path $ProjectDir "Saved\StagedBuilds"
+$RunUAT = Join-Path $UERoot "Engine\Build\BatchFiles\RunUAT.bat"
+$Staging = Join-Path $ProjectDir "Saved\StagedBuilds"   # where -stage writes <Platform>Server\
 function Invoke-UAT([string]$Platform) {
     $uatArgs = @(
         "BuildCookRun",
@@ -200,7 +203,9 @@ function Invoke-UAT([string]$Platform) {
         "-platform=$Platform", "-server", "-noclient", "-serverconfig=Development",
         "-build", "-nop4", "-utf8output", "-unattended", "-nullrhi"
     )
-    if (-not $SkipCook) { $uatArgs += @("-cook", "-stage", "-pak", "-archive", "-archivedirectory=`"$Archive`"") }
+    # -stage alone leaves the result in Saved\StagedBuilds\<Platform>Server; -archive into the
+    # same tree makes UAT copy the folder onto itself, so it is deliberately not used.
+    if (-not $SkipCook) { $uatArgs += @("-cook", "-stage", "-pak") }
     Log "RunUAT $($uatArgs -join ' ')"
     $uatLog = Join-Path $WorkDir "uat-$Platform-$Stamp.log"
     $p = Start-Process -FilePath $RunUAT -ArgumentList $uatArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput $uatLog -RedirectStandardError "$uatLog.err"
@@ -214,58 +219,51 @@ function Invoke-UAT([string]$Platform) {
     }
 }
 
-Step "BuildCookRun Linux server"
-$t0 = Get-Date
-Invoke-UAT "Linux"
-Log ("Linux server done in {0:N1} min" -f ((Get-Date) - $t0).TotalMinutes)
-
-if ($AlsoWindows) {
-    Step "BuildCookRun Win64 server"
+foreach ($Platform in $Platforms) {
+    Step "BuildCookRun $Platform server"
     $t0 = Get-Date
-    Invoke-UAT "Win64"
-    Log ("Win64 server done in {0:N1} min" -f ((Get-Date) - $t0).TotalMinutes)
+    Invoke-UAT $Platform
+    Log ("{0} server done in {1:N1} min" -f $Platform, ((Get-Date) - $t0).TotalMinutes)
 }
 
 if ($SkipCook) { Finish "ok" "compile only (-SkipCook); nothing staged" }
 
 # ---------------------------------------------------------------------------------
 Step "Package and upload"
-$Staged = Join-Path $Archive "LinuxServer"
-if (-not (Test-Path (Join-Path $Staged "$($ProjectName)Server.sh"))) { Finish "failed" "Staged build missing $Staged\$($ProjectName)Server.sh" }
-
 function New-Zip([string]$Folder, [string]$ZipPath) {
     if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
     # Compress-Archive is slow and caps at 2 GB; bsdtar ships with Windows Server 2019+.
-    Push-Location $Archive
+    Push-Location $Staging
     try { $code = Invoke-Native -Exe "tar.exe" -Arguments @("-a", "-cf", $ZipPath, $Folder) -Quiet } finally { Pop-Location }
     if ($code -ne 0 -or -not (Test-Path $ZipPath)) { Finish "failed" "tar failed creating $ZipPath (exit $code)" }
     return [math]::Round((Get-Item $ZipPath).Length / 1GB, 2)
 }
 
-$ZipName = "$ProjectName-LinuxServer-$Sha-$Stamp.zip"
-$ZipPath = Join-Path $WorkDir $ZipName
-$SizeGB  = New-Zip "LinuxServer" $ZipPath
-Log "$ZipName ($SizeGB GB)"
-$Summary.Artifact = $ZipName
-$Summary.ArtifactSizeGB = $SizeGB
-
-if ($AlsoWindows) {
-    $WinZipName = "$ProjectName-WindowsServer-$Sha-$Stamp.zip"
-    $WinZip = Join-Path $WorkDir $WinZipName
-    $WinSize = New-Zip "WindowsServer" $WinZip
-    Log "$WinZipName ($WinSize GB)"
-    $Summary.WindowsArtifact = $WinZipName
+# Staged folder name and the file that proves it is complete, per platform.
+$StagedLayout = @{
+    Linux = @{ Folder = "LinuxServer";   Marker = "$($ProjectName)Server.sh" }
+    Win64 = @{ Folder = "WindowsServer"; Marker = "$($ProjectName)Server.exe" }
 }
-
-if ($S3Bucket) {
-    $code = Invoke-Native -Exe $Aws -Arguments @("s3", "cp", $ZipPath, "s3://$S3Bucket/builds/$ZipName", "--only-show-errors")
-    if ($code -ne 0) { Finish "failed" "S3 upload failed (exit $code)" }
-    $Summary.S3 = "s3://$S3Bucket/builds/$ZipName"
-    Log "uploaded $($Summary.S3)"
-    if ($AlsoWindows) {
-        $code = Invoke-Native -Exe $Aws -Arguments @("s3", "cp", $WinZip, "s3://$S3Bucket/builds/$WinZipName", "--only-show-errors")
-        if ($code -eq 0) { $Summary.WindowsS3 = "s3://$S3Bucket/builds/$WinZipName"; Log "uploaded $($Summary.WindowsS3)" } else { Log "WARNING: Windows zip upload failed (exit $code)" }
+$Summary.Artifacts = @()
+$Uploaded = 0
+foreach ($Platform in $Platforms) {
+    $layout = $StagedLayout[$Platform]
+    if (-not $layout) { Log "WARNING: no packaging rule for $Platform"; continue }
+    $folder = Join-Path $Staging $layout.Folder
+    if (-not (Test-Path (Join-Path $folder $layout.Marker))) { Finish "failed" "Staged build missing $folder\$($layout.Marker)" }
+    $zipName = "$ProjectName-$($layout.Folder)-$Sha-$Stamp.zip"
+    $zipPath = Join-Path $WorkDir $zipName
+    $sizeGB  = New-Zip $layout.Folder $zipPath
+    Log "$zipName ($sizeGB GB)"
+    $entry = [ordered]@{ Platform = $Platform; Zip = $zipName; SizeGB = $sizeGB }
+    if ($S3Bucket) {
+        $code = Invoke-Native -Exe $Aws -Arguments @("s3", "cp", $zipPath, "s3://$S3Bucket/builds/$zipName", "--only-show-errors")
+        if ($code -ne 0) { Finish "failed" "S3 upload of $zipName failed (exit $code)" }
+        $entry.S3 = "s3://$S3Bucket/builds/$zipName"
+        Log "uploaded $($entry.S3)"
+        $Uploaded++
     }
+    $Summary.Artifacts += $entry
 }
 
-Finish "ok" "LinuxServer staged and uploaded"
+Finish "ok" ("staged {0}; uploaded {1} zip(s)" -f ($Platforms -join ","), $Uploaded)
