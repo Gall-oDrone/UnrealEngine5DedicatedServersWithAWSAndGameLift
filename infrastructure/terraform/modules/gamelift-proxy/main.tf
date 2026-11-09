@@ -56,6 +56,7 @@ data "aws_iam_policy_document" "gamelift" {
       "gamelift:CreateGameSession",
       "gamelift:DescribeGameSessions",
       "gamelift:CreatePlayerSession",
+      "gamelift:DescribeAlias", # alias -> fleet resolution for the session-ownership check
     ]
     # GameLift's resource-level support for these actions is partial; keep "*" for the
     # Describe call and let the Lambda pin the fleet in the payload instead.
