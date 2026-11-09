@@ -213,14 +213,16 @@ function Invoke-UAT([string]$Platform) {
     # reuse and wait on the UAT process object only.
     $env:MSBUILDDISABLENODEREUSE = "1"
     $p = Start-Process -FilePath $RunUAT -ArgumentList $uatArgs -NoNewWindow -PassThru -RedirectStandardOutput $uatLog -RedirectStandardError "$uatLog.err"
+    $null = $p.Handle   # PowerShell quirk: ExitCode stays $null after WaitForExit unless the handle was read first
     $p.WaitForExit()
+    $exitCode = if ($null -eq $p.ExitCode) { -1 } else { $p.ExitCode }
     if (Test-Path $uatLog) { Get-Content $uatLog -Tail 12 | ForEach-Object { Log "  uat| $_" } }
     Upload $uatLog "builds/logs/$(Split-Path $uatLog -Leaf)"
-    if ($p.ExitCode -ne 0) {
+    if ($exitCode -ne 0) {
         if (Test-Path $uatLog) {
             Get-Content $uatLog | Select-String -Pattern "error [A-Z]+[0-9]+|Error:|ERROR:|fatal" | Select-Object -Last 20 | ForEach-Object { Log "  uat-err| $($_.Line)" }
         }
-        Finish "failed" "RunUAT ($Platform) exit code $($p.ExitCode); see $uatLog"
+        Finish "failed" "RunUAT ($Platform) exit code $exitCode; see $uatLog"
     }
 }
 
