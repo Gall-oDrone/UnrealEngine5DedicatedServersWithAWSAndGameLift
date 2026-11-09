@@ -123,3 +123,5 @@ Plugins/*/Intermediate/
 
 # Local development
 LocalSettings.ini
+# gamelift-proxy module build artefact
+infrastructure/terraform/modules/gamelift-proxy/.build/
