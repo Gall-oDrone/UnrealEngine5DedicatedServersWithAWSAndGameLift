@@ -124,16 +124,30 @@ def handler(event, _context):
     except ValueError as exc:
         return _error(400, "SerializationException", f"Invalid JSON body: {exc}")
 
+    pinned = ALIAS_ID or FLEET_ID
     if target in FLEET_SCOPED:
-        # Pin the fleet: shipped clients cannot be pointed at another fleet by editing an ini.
-        if ALIAS_ID:
+        session_id = payload.get("GameSessionId", "")
+        if target == "GameLift.DescribeGameSessions" and session_id:
+            # Polling one session (client waits for ACTIVATING -> ACTIVE). GameLift accepts
+            # exactly one of GameSessionId / FleetId / AliasId, so do not add the fleet; instead
+            # make sure the session belongs to the pinned fleet (ARN: .../gamesession/<fleet>/...).
             payload.pop("FleetId", None)
-            payload["AliasId"] = ALIAS_ID
-        elif FLEET_ID:
             payload.pop("AliasId", None)
-            payload["FleetId"] = FLEET_ID
+            if FLEET_ID and f":gamesession/{FLEET_ID}/" not in session_id:
+                return _error(400, "InvalidRequestException", "GameSessionId does not belong to this fleet")
+        elif pinned:
+            # Pin the fleet: shipped clients cannot be pointed at another fleet by editing an ini.
+            if ALIAS_ID:
+                payload.pop("FleetId", None)
+                payload["AliasId"] = ALIAS_ID
+            else:
+                payload.pop("AliasId", None)
+                payload["FleetId"] = FLEET_ID
         if target == "GameLift.CreateGameSession":
             payload["MaximumPlayerSessionCount"] = max(1, min(int(payload.get("MaximumPlayerSessionCount", 8)), 16))
+    elif target == "GameLift.CreatePlayerSession" and FLEET_ID:
+        if f":gamesession/{FLEET_ID}/" not in payload.get("GameSessionId", ""):
+            return _error(400, "InvalidRequestException", "GameSessionId does not belong to this fleet")
 
     body = json.dumps(payload, separators=(",", ":"))
     request = urllib.request.Request(ENDPOINT, data=body.encode("utf-8"), method="POST", headers=_sigv4_headers(target, body))
