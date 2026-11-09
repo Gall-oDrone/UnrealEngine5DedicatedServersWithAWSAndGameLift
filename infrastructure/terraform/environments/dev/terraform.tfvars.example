@@ -1,0 +1,74 @@
+# Development Environment Configuration Example
+# Copy this file to terraform.tfvars and modify the values as needed
+
+# Project configuration
+project_name = "my-ue5-compilation-dev"
+aws_region   = "us-east-1"
+owner        = "game-dev-team"
+
+# Networking configuration
+vpc_cidr_block       = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
+private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
+enable_nat_gateway   = false  # Set to true if you need private subnets
+
+# Compute configuration
+# g6.2xlarge  (1x L4, 8 vCPU, 32 GiB)   ~$1.00/h  <- default, good for editor/DCV work
+# g6.4xlarge  (1x L4, 16 vCPU, 64 GiB)  ~$1.35/h
+# g5.2xlarge  (1x A10G, 8 vCPU)         ~$1.21/h
+# g5.24xlarge (4x A10G, 96 vCPU)        ~$8.14/h  <- needs allow_expensive_instance_types
+instance_type                  = "g6.2xlarge"
+allow_expensive_instance_types = false # set true ONLY for g5/g6 8xlarge+ / p-family
+key_pair_name                  = "your-key-pair-name" # Optional: for SSH/RDP access
+root_volume_size               = 100
+data_volume_size               = 500 # must be >= snapshot size (500)
+
+# Custom AMI Configuration (Optional)
+# If you have a custom AMI with pre-installed tools, specify it here
+# Leave empty to use the default Windows Server 2022 AMI
+custom_ami_id = ""  # e.g., "ami-1234567890abcdef0"
+
+# Security configuration - IMPORTANT: Restrict to your IP addresses
+allowed_cidr_blocks = [
+  "YOUR_IP_ADDRESS/32",  # Replace with your actual IP
+  "10.0.0.0/16"          # Allow access from VPC
+]
+
+# Unreal Engine configuration
+unreal_engine_version = "5.4"
+unreal_engine_branch  = "5.4"
+
+# Administrator password source
+# Preferred: store a strong password in SSM Parameter Store (SecureString)
+# and reference it here.
+admin_password_ssm_parameter_name = "/ue5/dev/windows-admin-password"
+# Fallback: set admin_password directly only when not using SSM.
+admin_password = ""
+
+# Storage configuration
+enable_s3_access = false
+s3_bucket_name   = ""
+
+# Security features
+enable_kms          = false  # Set to true for additional encryption
+enable_vpc_flow_logs = true
+log_retention_days  = 30
+
+# Monitoring configuration
+enable_memory_monitoring = false
+enable_disk_monitoring   = false
+enable_sns_notifications = false
+notification_email       = "your-email@example.com"  # Required if enable_sns_notifications = true
+
+# Snapshot Configuration
+# The UE 5.6 build environment is kept as an ARCHIVED snapshot (~$5/month).
+# It must be restored to the standard tier before apply (24-72 h):
+#   ./infrastructure/scripts/snapshot/manage_snapshot.sh restore --days 7 --wait
+# Terraform refuses to create resources while the snapshot is archived.
+root_volume_snapshot_id = ""                       # optional extra copy of the OS disk on /dev/sdg (AMI snapshot snap-031ad7508b5e1486d); not needed
+data_volume_snapshot_id = "snap-0777feef308067690" # UE 5.6 source build, 500 GB; "" for a blank volume
+
+# Fast Snapshot Restore Configuration
+# WARNING: FSR costs ~$0.75 per AZ-hour (~$540/month) while enabled. Only
+# useful if you need full disk throughput in the first minutes after boot.
+data_volume_snapshot_fsr = false

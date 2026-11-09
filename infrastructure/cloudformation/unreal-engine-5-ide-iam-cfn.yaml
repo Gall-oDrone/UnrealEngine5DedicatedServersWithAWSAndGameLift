@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM resources (role and instance profile) for the Unreal Engine 5 IDE environment.
+
+Parameters:
+  ParentStackName:
+    Type: String
+    Description: Base stack name used for naming IAM resources
+
+Resources:
+  UnrealEngineIdeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ParentStackName}-ide-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - ssm.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ide-password
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ParentStackName}-password*
+              - Effect: Allow
+                Action: secretsmanager:ListSecrets
+                Resource: "*"
+        - PolicyName: ide-get-role
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:GetRole
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/${ParentStackName}-ide-role
+        - PolicyName: terraform-deployment-permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "*"
+                Resource: "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Path: "/"
+
+  UnrealEngineIdeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${ParentStackName}-ide-instance-profile
+      Path: "/"
+      Roles:
+        - !Ref UnrealEngineIdeRole
+
+Outputs:
+  RoleArn:
+    Description: IAM role ARN for the IDE instance
+    Value: !GetAtt UnrealEngineIdeRole.Arn
+  RoleName:
+    Description: IAM role name for the IDE instance
+    Value: !Ref UnrealEngineIdeRole
+  InstanceProfileName:
+    Description: Instance profile name for the IDE instance
+    Value: !Ref UnrealEngineIdeInstanceProfile
+  InstanceProfileArn:
+    Description: Instance profile ARN for the IDE instance
+    Value: !GetAtt UnrealEngineIdeInstanceProfile.Arn
