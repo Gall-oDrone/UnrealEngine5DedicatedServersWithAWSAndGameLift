@@ -7,19 +7,49 @@ This Terraform layout deploys AWS infrastructure for Unreal Engine 5 workflows u
 ```text
 infrastructure/terraform/
 ├── environments/
-│   └── dev/
+│   ├── dev/                        # UE 5.6 build box - create, build, DESTROY (billable)
+│   │   ├── main.tf
+│   │   ├── backend.tf              # S3 remote state (partial config)
+│   │   ├── backend.hcl             # bucket/key/region for `terraform init`
+│   │   ├── variables.tf
+│   │   ├── outputs.tf
+│   │   └── terraform.tfvars.example
+│   └── gamelift-proxy/             # API Gateway + Lambda for Shipping clients - long-lived (~$0 idle)
 │       ├── main.tf
-│       ├── backend.tf              # S3 remote state (partial config)
-│       ├── backend.hcl             # bucket/key/region for `terraform init`
-│       ├── variables.tf
-│       ├── outputs.tf
-│       └── terraform.tfvars.example
+│       └── backend.hcl             # same bucket, separate state key
 └── modules/
     ├── networking/
     ├── security/
     ├── compute/                    # EC2 + EBS (restores the UE 5.6 snapshot)
-    └── monitoring/
+    ├── monitoring/
+    └── gamelift-proxy/             # HTTP API + Python Lambda (lambda/proxy.py, no dependencies)
 ```
+
+## GameLift client proxy (`environments/gamelift-proxy`)
+
+Shipping builds of the game refuse raw AWS credentials, so the client posts its three
+GameLift calls (`CreateGameSession`, `DescribeGameSessions`, `CreatePlayerSession`) to this
+endpoint with the same JSON and `X-Amz-Target` header it would send to GameLift. The Lambda
+signs the request with its own role, pins the fleet from `-var fleet_id=` (a shipped client
+cannot retarget it), and returns GameLift's status and body **verbatim** - the client's
+`FleetCapacityExceededException` retry loop depends on the `__type` field surviving.
+
+```bash
+cd infrastructure/terraform/environments/gamelift-proxy
+terraform init -backend-config=backend.hcl
+terraform apply -var fleet_id=fleet-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   # or containerfleet-... / -var alias_id=
+terraform output -raw api_endpoint_url    # -> ApiEndpointUrl / -GameLiftEndpoint= / GAMELIFT_ENDPOINT_URL
+
+# Smoke test without any AWS credentials on the caller:
+U=$(terraform output -raw api_endpoint_url)
+curl -s -X POST $U -H 'X-Amz-Target: GameLift.DescribeGameSessions' -d '{"StatusFilter":"ACTIVE"}'
+#   {"GameSessions":[]}
+curl -s -X POST $U -H 'X-Amz-Target: GameLift.CreateGameSession' -d '{"Name":"Probe","MaximumPlayerSessionCount":4}'
+#   {"__type":"FleetCapacityExceededException",...}   <- passthrough when no server process is free
+```
+
+The stage is throttled (20 rps / 50 burst by default) and only `POST /` is routed; everything
+else is 404. Logs: `/aws/lambda/frontendui-gamelift-proxy` and `/aws/apigateway/frontendui-gamelift-proxy`.
 
 ## The UE 5.6 build environment lives in an *archived* snapshot
 
