@@ -1,0 +1,17 @@
+{
+  "gamelift": {
+    "sdk": {
+      "auth_token": "37a5ba8d-1bdc-44ae-b555-07fe20fe5c64",
+      "fleet_id": "fleet-a739a48a-0709-46f1-9715-d1a9bd277a58",
+      "host_id": "Compute-0898c4db3aa69497b-m6i-large-20251021-141642",
+      "websocket_url": "wss://us-east-1.api.amazongamelift.com",
+      "process_id": "Compute-0898c4db3aa69497b-m6i-large-20251021-141642-1761077815",
+      "compute_type": "ANYWHERE",
+      "region": "us-east-1"
+    },
+    "fleet_id": "fleet-a739a48a-0709-46f1-9715-d1a9bd277a58",
+    "compute_name": "Compute-0898c4db3aa69497b-m6i-large-20251021-141642",
+    "location": "custom-mygame-dev-location",
+    "generated_at": "2025-10-21T14:16:55-06:00"
+  }
+}

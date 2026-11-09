@@ -62,3 +62,64 @@ yarn-error.log*
 # Backup files
 *.bak
 *.backup
+
+# Unreal Engine
+# Build results
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+*.sln
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Unreal Engine specific files
+*.uproject
+*.uplugin
+*.upluginmanifest
+*.upluginmanifest.bak
+
+# Compiled assets
+*.uasset
+*.umap
+*.uasset.meta
+*.umap.meta
+
+# Blueprint compiled files
+*.uasset.bak
+*.umap.bak
+
+# Crash reports
+CrashReportClient/
+CrashReports/
+
+# Logs and debugging
+*.log
+Logs/
+UE4Minidump.dmp
+
+# Platform specific
+WindowsNoEditor/
+LinuxNoEditor/
+MacNoEditor/
+HTML5/
+Android/
+IOS/
+
+# Packaging
+Packaging/
+Staging/
+
+# Plugin binaries
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# Marketplace assets (if you want to ignore them)
+# Content/Marketplace/
+
+# Local development
+LocalSettings.ini
