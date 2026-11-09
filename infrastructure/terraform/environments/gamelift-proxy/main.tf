@@ -34,9 +34,12 @@ provider "aws" {
 }
 
 module "proxy" {
-  source   = "../../modules/gamelift-proxy"
-  fleet_id = var.fleet_id
-  alias_id = var.alias_id
+  source                          = "../../modules/gamelift-proxy"
+  fleet_id                        = var.fleet_id
+  alias_id                        = var.alias_id
+  auth_mode                       = var.auth_mode
+  eos_client_id                   = var.eos_client_id
+  eos_client_secret_ssm_parameter = var.eos_client_secret_ssm_parameter
 }
 
 variable "aws_region" {
@@ -51,6 +54,22 @@ variable "fleet_id" {
 }
 
 variable "alias_id" {
+  type    = string
+  default = ""
+}
+
+variable "auth_mode" {
+  description = "\"none\" or \"eos\" (see modules/gamelift-proxy)."
+  type        = string
+  default     = "none"
+}
+
+variable "eos_client_id" {
+  type    = string
+  default = ""
+}
+
+variable "eos_client_secret_ssm_parameter" {
   type    = string
   default = ""
 }

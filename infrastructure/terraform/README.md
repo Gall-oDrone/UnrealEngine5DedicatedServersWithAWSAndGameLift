@@ -54,6 +54,12 @@ session-addressed calls (`DescribeGameSessions` by `GameSessionId`, `CreatePlaye
 checked against the pinned fleet - it never adds `FleetId` to those (GameLift accepts exactly one of
 `GameSessionId` / `FleetId` / `AliasId`). Unit tests: `docker run --rm -v $PWD/infrastructure/terraform/modules/gamelift-proxy/lambda:/w:ro -w /w python:3.12-slim sh -c 'pip install -q pytest; python -m pytest -q -p no:cacheprovider /w'`.
 
+**Player auth**: `-var auth_mode=eos -var eos_client_id=<EOS Client ID>` requires every call to carry
+`Authorization: Bearer <Epic access token>`; the Lambda introspects it with Epic's `tokenInfo`
+(no client secret needed; `eos_client_secret_ssm_parameter` is optional), checks `active` and
+`client_id`, and overwrites `PlayerId` / `CreatorId` with the verified `account_id`. The game
+side is `UFrontendSessionBackend_GameLiftEOS` (`GAMELIFT_AUTH=EOS` in LaunchInstances.bat).
+
 The stage is throttled (20 rps / 50 burst by default) and only `POST /` is routed; everything
 else is 404. Logs: `/aws/lambda/frontendui-gamelift-proxy` and `/aws/apigateway/frontendui-gamelift-proxy`.
 

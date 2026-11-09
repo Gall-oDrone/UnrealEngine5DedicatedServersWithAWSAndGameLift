@@ -124,3 +124,59 @@ def test_sigv4_headers_shape(monkeypatch):
     assert h["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=AKIATEST/")
     assert "/us-east-1/gamelift/aws4_request" in h["Authorization"]
     assert "SignedHeaders=content-type;host;x-amz-date;x-amz-target" in h["Authorization"]
+
+
+# ---- auth_mode = eos ---------------------------------------------------------------------
+
+CLIENT = "xyza7891clientid"
+GOOD = "eg1~good-token-with-enough-length"
+OTHER_APP = "eg1~token-from-another-product"
+EXPIRED = "eg1~expired-token-00000000000"
+
+
+def load_eos(monkeypatch, **extra):
+    proxy, calls = load(monkeypatch, FLEET_ID=FLEET, AUTH_MODE="eos", EOS_CLIENT_ID=CLIENT, **extra)
+    introspections = []
+
+    def fake_introspect(token):
+        introspections.append(token)
+        if token == GOOD:
+            return 200, {"active": True, "client_id": CLIENT, "account_id": "acc0123456789", "expires_in": 7200}
+        if token == OTHER_APP:
+            return 200, {"active": True, "client_id": "someone-else", "account_id": "acc999", "expires_in": 7200}
+        return 200, {"active": False}
+
+    monkeypatch.setattr(proxy, "_introspect_eos_token", fake_introspect)
+    return proxy, calls, introspections
+
+
+def test_eos_requires_bearer(monkeypatch):
+    proxy, calls, _ = load_eos(monkeypatch)
+    status, body = post(proxy, "GameLift.DescribeGameSessions", {"StatusFilter": "ACTIVE"})
+    assert status == 401 and body["__type"] == "UnauthorizedException"
+    assert calls == []
+
+
+@pytest.mark.parametrize("token,why", [(EXPIRED, "rejected"), (OTHER_APP, "different application")])
+def test_eos_rejects_bad_tokens(monkeypatch, token, why):
+    proxy, calls, _ = load_eos(monkeypatch)
+    status, body = post(proxy, "GameLift.DescribeGameSessions", {"StatusFilter": "ACTIVE"}, {"Authorization": f"Bearer {token}"})
+    assert status == 401 and why in body["message"]
+    assert calls == []
+
+
+def test_eos_good_token_pins_identity_and_caches(monkeypatch):
+    proxy, calls, introspections = load_eos(monkeypatch)
+    hdr = {"authorization": f"Bearer {GOOD}"}  # lower-case header name, as HTTP API delivers it
+    status, _ = post(proxy, "GameLift.CreateGameSession", {"Name": "A", "MaximumPlayerSessionCount": 4, "CreatorId": "spoofed"}, hdr)
+    assert status == 200 and calls[-1][1]["CreatorId"] == "acc0123456789"
+    status, _ = post(proxy, "GameLift.CreatePlayerSession", {"GameSessionId": OWN_SESSION, "PlayerId": "spoofed"}, hdr)
+    assert status == 200 and calls[-1][1]["PlayerId"] == "acc0123456789"
+    assert introspections == [GOOD]  # second call served from cache
+
+
+def test_none_mode_ignores_bearer(monkeypatch):
+    proxy, calls = load(monkeypatch, FLEET_ID=FLEET)
+    monkeypatch.setattr(proxy, "_introspect_eos_token", lambda t: (_ for _ in ()).throw(AssertionError("must not introspect")))
+    status, _ = post(proxy, "GameLift.CreatePlayerSession", {"GameSessionId": OWN_SESSION, "PlayerId": "client-chosen"}, {"Authorization": "Bearer whatever-token-value"})
+    assert status == 200 and calls[-1][1]["PlayerId"] == "client-chosen"

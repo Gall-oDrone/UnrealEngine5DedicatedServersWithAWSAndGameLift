@@ -75,6 +75,26 @@ resource "aws_iam_role_policy" "gamelift" {
   policy = data.aws_iam_policy_document.gamelift.json
 }
 
+# Optional: read the EOS client secret (SecureString) for Basic auth on Epic's tokenInfo.
+data "aws_iam_policy_document" "ssm" {
+  count = var.eos_client_secret_ssm_parameter == "" ? 0 : 1
+  statement {
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.eos_client_secret_ssm_parameter}"]
+  }
+  statement {
+    actions   = ["kms:Decrypt"]
+    resources = ["arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+  }
+}
+
+resource "aws_iam_role_policy" "ssm" {
+  count  = var.eos_client_secret_ssm_parameter == "" ? 0 : 1
+  name   = "eos-client-secret"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.ssm[0].json
+}
+
 resource "aws_iam_role_policy_attachment" "logs" {
   role       = aws_iam_role.lambda.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -100,9 +120,12 @@ resource "aws_lambda_function" "proxy" {
 
   environment {
     variables = {
-      GAMELIFT_REGION = data.aws_region.current.name
-      FLEET_ID        = var.fleet_id
-      ALIAS_ID        = var.alias_id
+      GAMELIFT_REGION         = data.aws_region.current.name
+      FLEET_ID                = var.fleet_id
+      ALIAS_ID                = var.alias_id
+      AUTH_MODE               = var.auth_mode
+      EOS_CLIENT_ID           = var.eos_client_id
+      EOS_CLIENT_SECRET_PARAM = var.eos_client_secret_ssm_parameter
     }
   }
 
