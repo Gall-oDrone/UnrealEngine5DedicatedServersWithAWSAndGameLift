@@ -37,7 +37,8 @@ cannot retarget it), and returns GameLift's status and body **verbatim** - the c
 ```bash
 cd infrastructure/terraform/environments/gamelift-proxy
 terraform init -backend-config=backend.hcl
-terraform apply -var fleet_id=fleet-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   # or containerfleet-... / -var alias_id=
+terraform apply -var alias_id=alias-xxxxxxxx-...     # preferred: swap fleets with `aws gamelift update-alias`
+#   or: terraform apply -var fleet_id=fleet-... / containerfleet-...
 terraform output -raw api_endpoint_url    # -> ApiEndpointUrl / -GameLiftEndpoint= / GAMELIFT_ENDPOINT_URL
 
 # Smoke test without any AWS credentials on the caller:
@@ -47,6 +48,11 @@ curl -s -X POST $U -H 'X-Amz-Target: GameLift.DescribeGameSessions' -d '{"Status
 curl -s -X POST $U -H 'X-Amz-Target: GameLift.CreateGameSession' -d '{"Name":"Probe","MaximumPlayerSessionCount":4}'
 #   {"__type":"FleetCapacityExceededException",...}   <- passthrough when no server process is free
 ```
+
+With `alias_id` the Lambda resolves the alias to its current fleet (`DescribeAlias`, cached 5 min) so
+session-addressed calls (`DescribeGameSessions` by `GameSessionId`, `CreatePlayerSession`) are still
+checked against the pinned fleet - it never adds `FleetId` to those (GameLift accepts exactly one of
+`GameSessionId` / `FleetId` / `AliasId`). Unit tests: `docker run --rm -v $PWD/infrastructure/terraform/modules/gamelift-proxy/lambda:/w:ro -w /w python:3.12-slim sh -c 'pip install -q pytest; python -m pytest -q -p no:cacheprovider /w'`.
 
 The stage is throttled (20 rps / 50 burst by default) and only `POST /` is routed; everything
 else is 404. Logs: `/aws/lambda/frontendui-gamelift-proxy` and `/aws/apigateway/frontendui-gamelift-proxy`.

@@ -37,6 +37,10 @@ ALLOWED_TARGETS = {
 # Operations that take a fleet/alias and therefore get it pinned from the environment.
 FLEET_SCOPED = {"GameLift.CreateGameSession", "GameLift.DescribeGameSessions"}
 
+# Alias -> fleet resolution cache (so an `update-alias` fleet swap is picked up within TTL).
+_ALIAS_CACHE = {"fleet_id": "", "expires": 0.0}
+_ALIAS_TTL_SECONDS = 300
+
 
 def _sign(key, msg):
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
@@ -106,6 +110,43 @@ def _error(status, error_type, message):
     return _response(status, {"__type": error_type, "message": message})
 
 
+def _call_gamelift(target, payload):
+    """Signed POST to GameLift. Returns (status, raw_body)."""
+    body = json.dumps(payload, separators=(",", ":"))
+    request = urllib.request.Request(ENDPOINT, data=body.encode("utf-8"), method="POST", headers=_sigv4_headers(target, body))
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
+def _pinned_fleet_id():
+    """Fleet the proxy is locked to: FLEET_ID directly, or the alias' current target (cached)."""
+    if FLEET_ID:
+        return FLEET_ID
+    if not ALIAS_ID:
+        return ""
+    import time
+
+    now = time.time()
+    if _ALIAS_CACHE["fleet_id"] and now < _ALIAS_CACHE["expires"]:
+        return _ALIAS_CACHE["fleet_id"]
+    status, raw = _call_gamelift("GameLift.DescribeAlias", {"AliasId": ALIAS_ID})
+    if status == 200:
+        fleet = (json.loads(raw).get("Alias") or {}).get("RoutingStrategy", {}).get("FleetId", "")
+        if fleet:
+            _ALIAS_CACHE.update(fleet_id=fleet, expires=now + _ALIAS_TTL_SECONDS)
+            return fleet
+    # Could not resolve (TERMINAL alias, permissions): fall back to whatever we last knew.
+    return _ALIAS_CACHE["fleet_id"]
+
+
+def _owned_session(session_id, fleet_id):
+    # GameLift session ARNs: arn:aws:gamelift:<region>::gamesession/<fleet-id>/<location>/<gsess-id>
+    return bool(fleet_id) and f":gamesession/{fleet_id}/" in session_id
+
+
 def handler(event, _context):
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     target = headers.get("x-amz-target", "")
@@ -125,15 +166,16 @@ def handler(event, _context):
         return _error(400, "SerializationException", f"Invalid JSON body: {exc}")
 
     pinned = ALIAS_ID or FLEET_ID
+    owner_fleet = _pinned_fleet_id() if pinned else ""
     if target in FLEET_SCOPED:
         session_id = payload.get("GameSessionId", "")
         if target == "GameLift.DescribeGameSessions" and session_id:
             # Polling one session (client waits for ACTIVATING -> ACTIVE). GameLift accepts
             # exactly one of GameSessionId / FleetId / AliasId, so do not add the fleet; instead
-            # make sure the session belongs to the pinned fleet (ARN: .../gamesession/<fleet>/...).
+            # make sure the session belongs to the pinned fleet.
             payload.pop("FleetId", None)
             payload.pop("AliasId", None)
-            if FLEET_ID and f":gamesession/{FLEET_ID}/" not in session_id:
+            if pinned and not _owned_session(session_id, owner_fleet):
                 return _error(400, "InvalidRequestException", "GameSessionId does not belong to this fleet")
         elif pinned:
             # Pin the fleet: shipped clients cannot be pointed at another fleet by editing an ini.
@@ -145,17 +187,13 @@ def handler(event, _context):
                 payload["FleetId"] = FLEET_ID
         if target == "GameLift.CreateGameSession":
             payload["MaximumPlayerSessionCount"] = max(1, min(int(payload.get("MaximumPlayerSessionCount", 8)), 16))
-    elif target == "GameLift.CreatePlayerSession" and FLEET_ID:
-        if f":gamesession/{FLEET_ID}/" not in payload.get("GameSessionId", ""):
+    elif target == "GameLift.CreatePlayerSession" and pinned:
+        if not _owned_session(payload.get("GameSessionId", ""), owner_fleet):
             return _error(400, "InvalidRequestException", "GameSessionId does not belong to this fleet")
 
-    body = json.dumps(payload, separators=(",", ":"))
-    request = urllib.request.Request(ENDPOINT, data=body.encode("utf-8"), method="POST", headers=_sigv4_headers(target, body))
     try:
-        with urllib.request.urlopen(request, timeout=10) as resp:
-            return _response(resp.status, raw_body=resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        # GameLift error: forward status + body verbatim (__type, message).
-        return _response(exc.code, raw_body=exc.read().decode("utf-8"))
+        status, raw = _call_gamelift(target, payload)
+        # GameLift errors are forwarded verbatim (status + body with __type / Message).
+        return _response(status, raw_body=raw)
     except urllib.error.URLError as exc:
         return _error(502, "ProxyUpstreamException", f"Could not reach GameLift: {exc.reason}")
