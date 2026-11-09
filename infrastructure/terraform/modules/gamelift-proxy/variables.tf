@@ -31,3 +31,25 @@ variable "throttle_burst" {
   type    = number
   default = 50
 }
+
+variable "auth_mode" {
+  description = "Player authentication: \"none\" (anyone with the URL) or \"eos\" (Bearer Epic access token, introspected with Epic tokenInfo)."
+  type        = string
+  default     = "none"
+  validation {
+    condition     = contains(["none", "eos"], var.auth_mode)
+    error_message = "auth_mode must be \"none\" or \"eos\"."
+  }
+}
+
+variable "eos_client_id" {
+  description = "EOS Client ID the player tokens must have been issued for (required when auth_mode = eos)."
+  type        = string
+  default     = ""
+}
+
+variable "eos_client_secret_ssm_parameter" {
+  description = "Optional SSM SecureString parameter name (e.g. /frontendui/eos/client_secret) used for Basic auth on tokenInfo."
+  type        = string
+  default     = ""
+}
