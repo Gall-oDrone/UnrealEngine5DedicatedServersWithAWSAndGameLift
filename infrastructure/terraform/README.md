@@ -63,6 +63,19 @@ CloudWatch log group if the activation test fails), sets min/max capacity and a
 with one session per instance that means a second instance starts as soon as the first is in
 use), and points the alias at the new fleet so clients and the proxy follow without changes.
 
+Verified 2026-11-10: `create` took 7 min to ACTIVE; a game-session-queue placement fulfilled in
+< 15 s; with the single container busy, target tracking brought a second instance to ACTIVE in
+**409 s (~7 min)** and the next placement fulfilled in < 5 s. Size accordingly (min 2, or more
+sessions per instance) - target tracking is a slow lever for a 1-session fleet.
+
+## Game session queue + proxy placement support
+
+`aws gamelift create-game-session-queue --name frontendui-dev --timeout-in-seconds 480 --destinations DestinationArn=<alias ARN>`
+and `terraform apply ... -var queue_name=frontendui-dev` on the proxy: the Lambda then also
+allows `StartGameSessionPlacement` / `DescribeGameSessionPlacement`, pins the queue name and, in
+`auth_mode=eos`, the `DesiredPlayerSessions[].PlayerId`. The game picks the queue path when
+`GameSessionQueueName` is set (Docs/GameLift.md §6).
+
 ## GameLift client proxy (`environments/gamelift-proxy`)
 
 Shipping builds of the game refuse raw AWS credentials, so the client posts its three

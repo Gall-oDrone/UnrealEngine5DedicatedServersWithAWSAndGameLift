@@ -40,6 +40,7 @@ module "proxy" {
   auth_mode                       = var.auth_mode
   eos_client_id                   = var.eos_client_id
   eos_client_secret_ssm_parameter = var.eos_client_secret_ssm_parameter
+  queue_name                      = var.queue_name
 }
 
 variable "aws_region" {
@@ -70,6 +71,11 @@ variable "eos_client_id" {
 }
 
 variable "eos_client_secret_ssm_parameter" {
+  type    = string
+  default = ""
+}
+
+variable "queue_name" {
   type    = string
   default = ""
 }
