@@ -81,3 +81,11 @@ output "api_endpoint_url" {
 output "lambda_log_group" {
   value = module.proxy.lambda_log_group
 }
+
+output "proxy_function_name" {
+  value = module.proxy.lambda_function_name
+}
+
+output "proxy_api_id" {
+  value = module.proxy.proxy_api_id
+}
