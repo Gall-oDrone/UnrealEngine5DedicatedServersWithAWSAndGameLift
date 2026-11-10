@@ -56,6 +56,8 @@ data "aws_iam_policy_document" "gamelift" {
       "gamelift:CreateGameSession",
       "gamelift:DescribeGameSessions",
       "gamelift:CreatePlayerSession",
+      "gamelift:StartGameSessionPlacement",
+      "gamelift:DescribeGameSessionPlacement",
       "gamelift:DescribeAlias", # alias -> fleet resolution for the session-ownership check
     ]
     # GameLift's resource-level support for these actions is partial; keep "*" for the
@@ -123,6 +125,7 @@ resource "aws_lambda_function" "proxy" {
       GAMELIFT_REGION         = data.aws_region.current.name
       FLEET_ID                = var.fleet_id
       ALIAS_ID                = var.alias_id
+      QUEUE_NAME              = var.queue_name
       AUTH_MODE               = var.auth_mode
       EOS_CLIENT_ID           = var.eos_client_id
       EOS_CLIENT_SECRET_PARAM = var.eos_client_secret_ssm_parameter

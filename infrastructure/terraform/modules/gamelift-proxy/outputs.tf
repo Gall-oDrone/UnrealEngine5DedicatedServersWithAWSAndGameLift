@@ -10,3 +10,7 @@ output "lambda_function_name" {
 output "lambda_log_group" {
   value = aws_cloudwatch_log_group.lambda.name
 }
+
+output "proxy_api_id" {
+  value = aws_apigatewayv2_api.proxy.id
+}

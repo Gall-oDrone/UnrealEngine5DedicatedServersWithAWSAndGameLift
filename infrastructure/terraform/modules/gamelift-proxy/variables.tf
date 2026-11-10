@@ -53,3 +53,9 @@ variable "eos_client_secret_ssm_parameter" {
   type        = string
   default     = ""
 }
+
+variable "queue_name" {
+  description = "Game session queue (name or ARN) pinned onto StartGameSessionPlacement. Empty = client chooses."
+  type        = string
+  default     = ""
+}

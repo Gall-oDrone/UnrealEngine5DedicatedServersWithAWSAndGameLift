@@ -14,16 +14,67 @@ infrastructure/terraform/
 │   │   ├── variables.tf
 │   │   ├── outputs.tf
 │   │   └── terraform.tfvars.example
-│   └── gamelift-proxy/             # API Gateway + Lambda for Shipping clients - long-lived (~$0 idle)
-│       ├── main.tf
-│       └── backend.hcl             # same bucket, separate state key
+│   ├── gamelift-proxy/             # API Gateway + Lambda for Shipping clients - long-lived (~$0 idle)
+│   │   ├── main.tf
+│   │   └── backend.hcl             # same bucket, separate state key
+│   └── gamelift-observability/     # CloudWatch dashboard + alarms + SNS e-mail - long-lived (~$0)
+│       ├── main.tf                 # reads the proxy stack's remote state for the API/Lambda ids
+│       └── backend.hcl
 └── modules/
     ├── networking/
     ├── security/
     ├── compute/                    # EC2 + EBS (restores the UE 5.6 snapshot)
     ├── monitoring/
-    └── gamelift-proxy/             # HTTP API + Python Lambda (lambda/proxy.py, no dependencies)
+    ├── gamelift-proxy/             # HTTP API + Python Lambda (lambda/proxy.py, no dependencies)
+    └── gamelift-observability/     # dashboard keyed on the GameLift metric group, 4 alarms
 ```
+
+## Observability (`environments/gamelift-observability`)
+
+```bash
+cd infrastructure/terraform/environments/gamelift-observability
+terraform init -backend-config=backend.hcl
+terraform apply -var alert_email=you@example.com     # confirm the SNS mail once
+terraform output -raw dashboard_url
+```
+
+Dashboard `frontendui-gamelift`: game/player sessions, server processes and capacity,
+`PercentAvailableGameSessions` (the auto-scaling signal) with crash counts, proxy requests by
+status / p95 latency / Lambda errors, EC2 On-Demand vCPUs in use, and the last 4xx/5xx proxy
+requests. GameLift metrics are read through the fleet **metric group** `default`, so new fleets
+(Anywhere or container) show up without editing anything. Alarms (all to the SNS topic):
+proxy Lambda errors, proxy 5xx, `ServerProcessAbnormalTerminations` (server crashes), and
+**EC2 vCPUs in use for 6 h straight** - the "forgot to destroy the build box / fleet" guard.
+
+## Container fleet lifecycle (`scripts/gamelift/container-fleet.sh`)
+
+The Docs/GameLift.md §5 recipe as one command, with target-tracking auto-scaling and alias switch:
+
+```bash
+S=infrastructure/scripts/gamelift/container-fleet.sh
+$S create --image-tag <sha> --instance-type c6i.large --min 1 --max 2 --target 50 --alias alias-...
+$S status --alias alias-...
+$S delete --fleet-id containerfleet-... --alias alias-... --restore-fleet fleet-...   # same day!
+```
+
+`create` reuses the CGD version when the image tag is unchanged, waits for ACTIVE (and prints the
+CloudWatch log group if the activation test fails), sets min/max capacity and a
+`PercentAvailableGameSessions` target policy (50 % = keep one spare session's worth of capacity:
+with one session per instance that means a second instance starts as soon as the first is in
+use), and points the alias at the new fleet so clients and the proxy follow without changes.
+
+Verified 2026-11-10: `create` took 7 min to ACTIVE; a game-session-queue placement fulfilled in
+< 15 s; with the single container busy, target tracking brought a second instance to ACTIVE in
+**409 s (~7 min)** and the next placement fulfilled in < 5 s. Size accordingly (min 2, or more
+sessions per instance) - target tracking is a slow lever for a 1-session fleet.
+
+## Game session queue + proxy placement support
+
+`aws gamelift create-game-session-queue --name frontendui-dev --timeout-in-seconds 480 --destinations DestinationArn=<alias ARN>`
+and `terraform apply ... -var queue_name=frontendui-dev` on the proxy: the Lambda then also
+allows `StartGameSessionPlacement` / `DescribeGameSessionPlacement`, pins the queue name and, in
+`auth_mode=eos`, the `DesiredPlayerSessions[].PlayerId`. The game picks the queue path when
+`GameSessionQueueName` is set (Docs/GameLift.md §6).
 
 ## GameLift client proxy (`environments/gamelift-proxy`)
 

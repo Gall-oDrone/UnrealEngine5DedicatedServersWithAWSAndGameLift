@@ -44,10 +44,15 @@ ALLOWED_TARGETS = {
     "GameLift.CreateGameSession",
     "GameLift.DescribeGameSessions",
     "GameLift.CreatePlayerSession",
+    "GameLift.StartGameSessionPlacement",
+    "GameLift.DescribeGameSessionPlacement",
 }
 
 # Operations that take a fleet/alias and therefore get it pinned from the environment.
 FLEET_SCOPED = {"GameLift.CreateGameSession", "GameLift.DescribeGameSessions"}
+
+# Game session queue pinned onto StartGameSessionPlacement (empty = client chooses).
+QUEUE_NAME = os.environ.get("QUEUE_NAME", "")
 
 # Alias -> fleet resolution cache (so an `update-alias` fleet swap is picked up within TTL).
 _ALIAS_CACHE = {"fleet_id": "", "expires": 0.0}
@@ -272,6 +277,13 @@ def handler(event, _context):
     elif target == "GameLift.CreatePlayerSession" and pinned:
         if not _owned_session(payload.get("GameSessionId", ""), owner_fleet):
             return _error(400, "InvalidRequestException", "GameSessionId does not belong to this fleet")
+    elif target == "GameLift.StartGameSessionPlacement":
+        if QUEUE_NAME:
+            payload["GameSessionQueueName"] = QUEUE_NAME
+        payload["MaximumPlayerSessionCount"] = max(1, min(int(payload.get("MaximumPlayerSessionCount", 8)), 16))
+        desired = payload.get("DesiredPlayerSessions") or []
+        if len(desired) > 1:
+            return _error(400, "InvalidRequestException", "Only the requesting player may be placed")
 
     if account_id:
         # Identity comes from the verified token, never from the client body.
@@ -279,6 +291,9 @@ def handler(event, _context):
             payload["PlayerId"] = account_id
         elif target == "GameLift.CreateGameSession":
             payload["CreatorId"] = account_id
+        elif target == "GameLift.StartGameSessionPlacement":
+            for slot in payload.get("DesiredPlayerSessions") or []:
+                slot["PlayerId"] = account_id
 
     try:
         status, raw = _call_gamelift(target, payload)

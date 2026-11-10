@@ -40,6 +40,7 @@ module "proxy" {
   auth_mode                       = var.auth_mode
   eos_client_id                   = var.eos_client_id
   eos_client_secret_ssm_parameter = var.eos_client_secret_ssm_parameter
+  queue_name                      = var.queue_name
 }
 
 variable "aws_region" {
@@ -74,10 +75,23 @@ variable "eos_client_secret_ssm_parameter" {
   default = ""
 }
 
+variable "queue_name" {
+  type    = string
+  default = ""
+}
+
 output "api_endpoint_url" {
   value = module.proxy.api_endpoint_url
 }
 
 output "lambda_log_group" {
   value = module.proxy.lambda_log_group
+}
+
+output "proxy_function_name" {
+  value = module.proxy.lambda_function_name
+}
+
+output "proxy_api_id" {
+  value = module.proxy.proxy_api_id
 }

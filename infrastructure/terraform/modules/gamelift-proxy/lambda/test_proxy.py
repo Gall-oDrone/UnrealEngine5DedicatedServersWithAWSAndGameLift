@@ -19,7 +19,7 @@ FOREIGN_SESSION = "arn:aws:gamelift:us-east-1::gamesession/fleet-other/custom-x/
 
 
 def load(monkeypatch, **env):
-    for k in ("FLEET_ID", "ALIAS_ID"):
+    for k in ("FLEET_ID", "ALIAS_ID", "QUEUE_NAME", "AUTH_MODE", "EOS_CLIENT_ID"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
@@ -180,3 +180,28 @@ def test_none_mode_ignores_bearer(monkeypatch):
     monkeypatch.setattr(proxy, "_introspect_eos_token", lambda t: (_ for _ in ()).throw(AssertionError("must not introspect")))
     status, _ = post(proxy, "GameLift.CreatePlayerSession", {"GameSessionId": OWN_SESSION, "PlayerId": "client-chosen"}, {"Authorization": "Bearer whatever-token-value"})
     assert status == 200 and calls[-1][1]["PlayerId"] == "client-chosen"
+
+
+# ---- game session placement --------------------------------------------------------------
+
+def test_placement_pins_queue_and_identity(monkeypatch):
+    proxy, calls, _ = load_eos(monkeypatch, QUEUE_NAME="frontendui-dev")
+    hdr = {"authorization": f"Bearer {GOOD}"}
+    body = {"PlacementId": "p-1", "GameSessionQueueName": "evil-queue", "MaximumPlayerSessionCount": 99,
+            "DesiredPlayerSessions": [{"PlayerId": "spoofed"}]}
+    status, _ = post(proxy, "GameLift.StartGameSessionPlacement", body, hdr)
+    assert status == 200
+    sent = calls[-1][1]
+    assert sent["GameSessionQueueName"] == "frontendui-dev"
+    assert sent["MaximumPlayerSessionCount"] == 16
+    assert sent["DesiredPlayerSessions"] == [{"PlayerId": "acc0123456789"}]
+    status, _ = post(proxy, "GameLift.DescribeGameSessionPlacement", {"PlacementId": "p-1"}, hdr)
+    assert status == 200 and calls[-1][1] == {"PlacementId": "p-1"}
+
+
+def test_placement_rejects_extra_players(monkeypatch):
+    proxy, calls = load(monkeypatch, QUEUE_NAME="frontendui-dev")
+    status, body = post(proxy, "GameLift.StartGameSessionPlacement",
+                        {"PlacementId": "p-2", "DesiredPlayerSessions": [{"PlayerId": "a"}, {"PlayerId": "b"}]})
+    assert status == 400 and "Only the requesting player" in body["message"]
+    assert calls == []
