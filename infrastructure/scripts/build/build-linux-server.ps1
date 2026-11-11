@@ -26,6 +26,17 @@
 .PARAMETER Platforms     Server platforms to build, in order (default Linux). e.g. -Platforms Linux,Win64
 .PARAMETER AlsoWindows   Shorthand for -Platforms Linux,Win64.
 .PARAMETER SkipCook      Build the server binary only (quick compile check).
+.PARAMETER WindowsClient Also build, cook and stage the Win64 *client* in -ClientConfig (default Shipping)
+                         and upload <Project>-WindowsClient-<Config>-<sha>-<stamp>.zip. A Shipping client
+                         cannot take -ini: overrides, so the deployment values below are appended to the
+                         checkout's Config\DefaultGame.ini / DefaultEngine.ini for the build and reverted after.
+.PARAMETER ClientConfig  Client configuration (default Shipping).
+.PARAMETER GameLiftEndpoint, GameLiftAlias, GameLiftLocation, GameLiftQueue, GameLiftRegion
+                         Values baked into the client's FrontendGameLiftSettings (ApiEndpointUrl, AliasId, ...).
+.PARAMETER EosArtifactsParameter
+                         SSM parameter (SecureString) holding the EOS "+Artifacts=(...)" line for DefaultEngine.ini
+                         (default /frontendui/eos/artifacts). Missing = the client ships on the Null subsystem
+                         with the plain GameLift backend (a proxy in auth_mode=eos will reject it).
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +47,15 @@ param(
     [string]$ProjectsRoot = "",
     [string[]]$Platforms  = @("Linux"),
     [switch]$AlsoWindows,
-    [switch]$SkipCook
+    [switch]$SkipCook,
+    [switch]$WindowsClient,
+    [string]$ClientConfig = "Shipping",
+    [string]$GameLiftEndpoint = "",
+    [string]$GameLiftAlias = "",
+    [string]$GameLiftLocation = "",
+    [string]$GameLiftQueue = "",
+    [string]$GameLiftRegion = "us-east-1",
+    [string]$EosArtifactsParameter = "/frontendui/eos/artifacts"
 )
 if ($AlsoWindows -and ($Platforms -notcontains "Win64")) { $Platforms += "Win64" }
 
@@ -196,18 +215,20 @@ if (-not (Test-Path $UProject)) { Finish "failed" "$UProject not found" }
 # ---------------------------------------------------------------------------------
 $RunUAT = Join-Path $UERoot "Engine\Build\BatchFiles\RunUAT.bat"
 $Staging = Join-Path $ProjectDir "Saved\StagedBuilds"   # where -stage writes <Platform>Server\
-function Invoke-UAT([string]$Platform) {
+function Invoke-UAT([string]$Platform, [string[]]$TargetArgs = @("-server", "-noclient", "-serverconfig=Development"), [string]$Label = "") {
+    if (-not $Label) { $Label = $Platform }
     $uatArgs = @(
         "BuildCookRun",
         "-project=`"$UProject`"",
-        "-platform=$Platform", "-server", "-noclient", "-serverconfig=Development",
+        "-platform=$Platform"
+    ) + $TargetArgs + @(
         "-build", "-nop4", "-utf8output", "-unattended", "-nullrhi"
     )
     # -stage alone leaves the result in Saved\StagedBuilds\<Platform>Server; -archive into the
     # same tree makes UAT copy the folder onto itself, so it is deliberately not used.
     if (-not $SkipCook) { $uatArgs += @("-cook", "-stage", "-pak") }
     Log "RunUAT $($uatArgs -join ' ')"
-    $uatLog = Join-Path $WorkDir "uat-$Platform-$Stamp.log"
+    $uatLog = Join-Path $WorkDir "uat-$Label-$Stamp.log"
     # UAT (re)builds its C# tools with MSBuild, which leaves idle "node reuse" workers alive
     # for ~15 min; `Start-Process -Wait` would wait for those descendants too. Disable node
     # reuse and wait on the UAT process object only.
@@ -273,4 +294,64 @@ foreach ($Platform in $Platforms) {
     $Summary.Artifacts += $entry
 }
 
-Finish "ok" ("staged {0}; uploaded {1} zip(s)" -f ($Platforms -join ","), $Uploaded)
+# ---------------------------------------------------------------------------------
+if ($WindowsClient) {
+    Step "Windows client ($ClientConfig)"
+    # A Shipping client reads no -ini: overrides, so what LaunchInstances.bat passes on the
+    # command line is appended to the packaged config layer for this build only. The EOS
+    # artifact (ids + the Peer2Peer client secret Epic expects inside the game) comes from SSM
+    # so it never lands in the repository; without it the client ships on Null + plain GameLift.
+    $gameIni   = Join-Path $ProjectDir "Config\DefaultGame.ini"
+    $engineIni = Join-Path $ProjectDir "Config\DefaultEngine.ini"
+    $artifacts = ""
+    if ($EosArtifactsParameter) {
+        $raw = & $Aws ssm get-parameter --name $EosArtifactsParameter --with-decryption --query Parameter.Value --output text 2>$null
+        if ($LASTEXITCODE -eq 0 -and $raw) { $artifacts = (($raw | ForEach-Object { "$_" }) -join "").Trim() }
+    }
+    if ($artifacts -and -not $artifacts.StartsWith("+Artifacts=")) { $artifacts = "+Artifacts=" + $artifacts }
+    if (-not $artifacts) { Log "WARNING: SSM parameter '$EosArtifactsParameter' not found or empty; client will use the Null subsystem and the plain GameLift backend" }
+
+    $backend = if ($artifacts) { "/Script/FrontendMultiplayerOSS.FrontendSessionBackend_GameLiftEOS" } else { "/Script/FrontendMultiplayer.FrontendSessionBackend_GameLift" }
+    $gameLines = @("", "; --- appended by build-linux-server.ps1 for the $ClientConfig client build; not committed ---",
+        "[/Script/FrontendMultiplayer.FrontendMultiplayerSettings]", "SessionBackendClass=$backend", "",
+        "[/Script/FrontendMultiplayer.FrontendGameLiftSettings]", "AwsRegion=$GameLiftRegion")
+    if ($GameLiftEndpoint) { $gameLines += "ApiEndpointUrl=$GameLiftEndpoint" }
+    if ($GameLiftAlias)    { $gameLines += "AliasId=$GameLiftAlias" }
+    if ($GameLiftLocation) { $gameLines += "Location=$GameLiftLocation" }
+    if ($GameLiftQueue)    { $gameLines += "GameSessionQueueName=$GameLiftQueue" }
+    Add-Content -Path $gameIni -Value ($gameLines -join "`r`n")
+    if ($artifacts) {
+        $engineLines = @("", "; --- appended by build-linux-server.ps1 for the $ClientConfig client build; not committed ---",
+            "[OnlineSubsystem]", "DefaultPlatformService=EOS", "",
+            "[/Script/OnlineSubsystemEOS.EOSSettings]", $artifacts)
+        Add-Content -Path $engineIni -Value ($engineLines -join "`r`n")
+    }
+    Log ("client config: backend={0} endpoint={1} alias={2} location={3} queue={4} eos={5}" -f $backend, $GameLiftEndpoint, $GameLiftAlias, $GameLiftLocation, $GameLiftQueue, [bool]$artifacts)
+
+    $t0 = Get-Date
+    Invoke-UAT "Win64" @("-clientconfig=$ClientConfig") "Win64Client"
+    Log ("Win64 client done in {0:N1} min" -f ((Get-Date) - $t0).TotalMinutes)
+
+    # Put the checkout back before anything else can pick the appended lines up.
+    [void](Invoke-Native -Exe $Git -Arguments @("-C", $ProjectDir, "checkout", "--quiet", "--", "Config") -Quiet)
+
+    if (-not $SkipCook) {
+        $folder = Join-Path $Staging "Windows"
+        if (-not (Test-Path (Join-Path $folder "$ProjectName.exe"))) { Finish "failed" "Staged client missing $folder\$ProjectName.exe" }
+        $zipName = "$ProjectName-WindowsClient-$ClientConfig-$Sha-$Stamp.zip"
+        $zipPath = Join-Path $WorkDir $zipName
+        $sizeGB  = New-Zip "Windows" $zipPath
+        Log "$zipName ($sizeGB GB)"
+        $entry = [ordered]@{ Platform = "Win64Client-$ClientConfig"; Zip = $zipName; SizeGB = $sizeGB }
+        if ($S3Bucket) {
+            $code = Invoke-Native -Exe $Aws -Arguments @("s3", "cp", $zipPath, "s3://$S3Bucket/builds/$zipName", "--only-show-errors")
+            if ($code -ne 0) { Finish "failed" "S3 upload of $zipName failed (exit $code)" }
+            $entry.S3 = "s3://$S3Bucket/builds/$zipName"
+            Log "uploaded $($entry.S3)"
+            $Uploaded++
+        }
+        $Summary.Artifacts += $entry
+    }
+}
+
+Finish "ok" ("staged {0}{1}; uploaded {2} zip(s)" -f ($Platforms -join ","), $(if ($WindowsClient) { ",Win64 client ($ClientConfig)" } else { "" }), $Uploaded)

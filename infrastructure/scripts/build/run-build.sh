@@ -7,6 +7,10 @@
 #   ./run-build.sh                         # instance from terraform output, master, Linux only
 #   ./run-build.sh --ref v1.1-gamelift-anywhere
 #   ./run-build.sh --also-windows          # + Win64 server for LaunchDedicatedServer.bat PACKAGED
+#   ./run-build.sh --windows-client        # + Win64 *Shipping* client: ApiEndpointUrl / AliasId / Location /
+#                                          #   GameSessionQueueName from GAMELIFT_ENDPOINT_URL / GAMELIFT_ALIAS_ID /
+#                                          #   GAMELIFT_LOCATION / GAMELIFT_QUEUE_NAME, EOS artifact from SSM
+#                                          #   /frontendui/eos/artifacts (SecureString, the +Artifacts=(...) line)
 #   ./run-build.sh --skip-cook             # compile check only (~10 min)
 #   ./run-build.sh --instance i-0123... --bucket my-bucket
 #
@@ -30,8 +34,15 @@ while [[ $# -gt 0 ]]; do
     --ref)      REF="$2";      shift 2 ;;
     --region)   REGION="$2";   shift 2 ;;
     --also-windows) EXTRA_PS="$EXTRA_PS -AlsoWindows"; shift ;;
+    --windows-client)
+      EXTRA_PS="$EXTRA_PS -WindowsClient -GameLiftRegion '$REGION'"
+      [[ -n "${GAMELIFT_ENDPOINT_URL:-}" ]] && EXTRA_PS="$EXTRA_PS -GameLiftEndpoint '$GAMELIFT_ENDPOINT_URL'"
+      [[ -n "${GAMELIFT_ALIAS_ID:-}" ]]     && EXTRA_PS="$EXTRA_PS -GameLiftAlias '$GAMELIFT_ALIAS_ID'"
+      [[ -n "${GAMELIFT_LOCATION:-}" ]]     && EXTRA_PS="$EXTRA_PS -GameLiftLocation '$GAMELIFT_LOCATION'"
+      [[ -n "${GAMELIFT_QUEUE_NAME:-}" ]]   && EXTRA_PS="$EXTRA_PS -GameLiftQueue '$GAMELIFT_QUEUE_NAME'"
+      shift ;;
     --skip-cook)    EXTRA_PS="$EXTRA_PS -SkipCook"; TIMEOUT_S=3600; shift ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
