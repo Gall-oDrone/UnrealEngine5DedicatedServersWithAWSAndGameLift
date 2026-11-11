@@ -58,6 +58,7 @@ data "aws_iam_policy_document" "gamelift" {
       "gamelift:CreatePlayerSession",
       "gamelift:StartGameSessionPlacement",
       "gamelift:DescribeGameSessionPlacement",
+      "gamelift:StopGameSessionPlacement", # client abandons a PENDING placement
       "gamelift:DescribeAlias", # alias -> fleet resolution for the session-ownership check
     ]
     # GameLift's resource-level support for these actions is partial; keep "*" for the

@@ -7,7 +7,8 @@ forwards the request to GameLift signed with the Lambda's own role (SigV4) and r
 GameLift's body and status code UNCHANGED, so the client keeps seeing the real error
 "__type" (e.g. FleetCapacityExceededException drives its capacity-retry loop).
 
-Only the three player-facing operations are allowed. Fleet / alias come from the
+Only the player-facing operations are allowed: the three direct-to-fleet calls plus the game
+session queue trio (Start / Describe / Stop placement). Fleet / alias come from the
 environment (FLEET_ID / ALIAS_ID): if set, the proxy forces them onto every request so a
 shipped client cannot target someone else's fleet.
 
@@ -46,6 +47,9 @@ ALLOWED_TARGETS = {
     "GameLift.CreatePlayerSession",
     "GameLift.StartGameSessionPlacement",
     "GameLift.DescribeGameSessionPlacement",
+    # Sent by a client that abandons a PENDING placement (Back, new Host, exit) so GameLift does
+    # not fulfil it later for nobody. Takes only the client's own PlacementId; nothing to pin.
+    "GameLift.StopGameSessionPlacement",
 }
 
 # Operations that take a fleet/alias and therefore get it pinned from the environment.
