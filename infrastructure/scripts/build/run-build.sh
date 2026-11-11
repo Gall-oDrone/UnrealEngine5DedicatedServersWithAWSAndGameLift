@@ -11,6 +11,7 @@
 #                                          #   GameSessionQueueName from GAMELIFT_ENDPOINT_URL / GAMELIFT_ALIAS_ID /
 #                                          #   GAMELIFT_LOCATION / GAMELIFT_QUEUE_NAME, EOS artifact from SSM
 #                                          #   /frontendui/eos/artifacts (SecureString, the +Artifacts=(...) line)
+#   ./run-build.sh --windows-client --client-only   # client only, on a box that already built the servers
 #   ./run-build.sh --skip-cook             # compile check only (~10 min)
 #   ./run-build.sh --instance i-0123... --bucket my-bucket
 #
@@ -41,8 +42,9 @@ while [[ $# -gt 0 ]]; do
       [[ -n "${GAMELIFT_LOCATION:-}" ]]     && EXTRA_PS="$EXTRA_PS -GameLiftLocation '$GAMELIFT_LOCATION'"
       [[ -n "${GAMELIFT_QUEUE_NAME:-}" ]]   && EXTRA_PS="$EXTRA_PS -GameLiftQueue '$GAMELIFT_QUEUE_NAME'"
       shift ;;
+    --client-only)  EXTRA_PS="$EXTRA_PS -Platforms None"; shift ;;   # with --windows-client: skip the servers
     --skip-cook)    EXTRA_PS="$EXTRA_PS -SkipCook"; TIMEOUT_S=3600; shift ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
