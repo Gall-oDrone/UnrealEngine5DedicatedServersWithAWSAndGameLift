@@ -68,6 +68,15 @@ Verified 2026-11-10: `create` took 7 min to ACTIVE; a game-session-queue placeme
 **409 s (~7 min)** and the next placement fulfilled in < 5 s. Size accordingly (min 2, or more
 sessions per instance) - target tracking is a slow lever for a 1-session fleet.
 
+Verified 2026-11-11 with the same CGD on **`c6i.xlarge`** (now the script default): GameLift
+computes **3 sessions per instance** (vs 1 on `c6i.large`, for ~1.9x the price). Two placements
+issued back to back both fulfilled in **1.9 s** on the same instance; with 1 of 3 slots left
+(33 % < 50 % target) the second instance was ACTIVE between +392 s and +519 s - the same scale-out
+time, but now in the background while a slot stays open. Note that the target-tracking change is
+not reflected in `InstanceCounts.DESIRED` (stayed 1 while `ACTIVE` was 2) and logs no
+`FLEET_SCALING_EVENT`; `status` shows it through the instance and container counts.
+`create` → 8 min to ACTIVE including the policy; `delete` → 3 min.
+
 ## Game session queue + proxy placement support
 
 `aws gamelift create-game-session-queue --name frontendui-dev --timeout-in-seconds 480 --destinations DestinationArn=<alias ARN>`

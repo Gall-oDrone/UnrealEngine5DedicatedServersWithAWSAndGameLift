@@ -2,7 +2,7 @@
 # Lifecycle of the FrontendUI Amazon GameLift Managed Container Fleet, as verified by hand in
 # Docs/GameLift.md §5, with target-tracking auto-scaling and alias switching added.
 #
-#   container-fleet.sh create  [--image-tag <sha>] [--instance-type c6i.large] [--min 1] [--max 2]
+#   container-fleet.sh create  [--image-tag <sha>] [--instance-type c6i.xlarge] [--min 1] [--max 2]
 #                              [--target 50] [--alias <alias-id>] [--cidr 0.0.0.0/0]
 #   container-fleet.sh status  [--fleet-id <containerfleet-id>]      # default: the fleet the alias points at
 #   container-fleet.sh delete  --fleet-id <containerfleet-id> [--alias <alias-id> --restore-fleet <fleet-id>]
@@ -12,7 +12,9 @@
 #          -> optional alias switch -> prints a client-free smoke test.
 # delete:  optional alias restore -> delete fleet -> wait until gone. The CGD and ECR image stay.
 #
-# Billing: >= min instances x instance price (c6i.large ~ $0.09/h) from create until delete.
+# Billing: >= min instances x instance price from create until delete. Default c6i.xlarge
+# (~$0.17/h) runs 3 game sessions per instance with the 1 vCPU / 2 GiB CGD; c6i.large (~$0.09/h)
+# runs 1, which makes target tracking useless (nothing is "available" while the only slot is busy).
 set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
@@ -23,7 +25,7 @@ PORT_FROM=7777
 PORT_TO=7877
 
 cmd="${1:-}"; shift || true
-IMAGE_TAG="latest"; INSTANCE_TYPE="c6i.large"; MIN=1; MAX=2; TARGET=50; ALIAS=""; CIDR="0.0.0.0/0"
+IMAGE_TAG="latest"; INSTANCE_TYPE="c6i.xlarge"; MIN=1; MAX=2; TARGET=50; ALIAS=""; CIDR="0.0.0.0/0"
 FLEET_ID=""; RESTORE_FLEET=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
