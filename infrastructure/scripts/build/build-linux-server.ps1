@@ -23,7 +23,7 @@
 .PARAMETER ProjectName   .uproject name without extension (default FrontendUI).
 .PARAMETER S3Bucket      Artifacts bucket. Empty = skip upload.
 .PARAMETER ProjectsRoot  Where to clone (default <engine drive>:\UE_5_6_Projects).
-.PARAMETER Platforms     Server platforms to build, in order (default Linux). e.g. -Platforms Linux,Win64
+.PARAMETER Platforms     Server platforms to build, in order (default Linux). e.g. -Platforms Linux,Win64; None = no server
 .PARAMETER AlsoWindows   Shorthand for -Platforms Linux,Win64.
 .PARAMETER SkipCook      Build the server binary only (quick compile check).
 .PARAMETER WindowsClient Also build, cook and stage the Win64 *client* in -ClientConfig (default Shipping)
@@ -58,6 +58,8 @@ param(
     [string]$EosArtifactsParameter = "/frontendui/eos/artifacts"
 )
 if ($AlsoWindows -and ($Platforms -notcontains "Win64")) { $Platforms += "Win64" }
+# -Platforms None: no server at all (e.g. -WindowsClient on a box that already built the servers).
+if ($Platforms.Count -eq 1 -and $Platforms[0] -eq "None") { $Platforms = @() }
 
 # Native tools (git, aws, tar) write progress to stderr. Under 'Stop' PowerShell 5.1
 # turns the first such line into a terminating error, so run with 'Continue' and check
