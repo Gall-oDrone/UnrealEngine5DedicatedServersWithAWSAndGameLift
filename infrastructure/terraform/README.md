@@ -71,10 +71,11 @@ sessions per instance) - target tracking is a slow lever for a 1-session fleet.
 ## Game session queue + proxy placement support
 
 `aws gamelift create-game-session-queue --name frontendui-dev --timeout-in-seconds 480 --destinations DestinationArn=<alias ARN>`
-and `terraform apply ... -var queue_name=frontendui-dev` on the proxy: the Lambda then also
-allows `StartGameSessionPlacement` / `DescribeGameSessionPlacement`, pins the queue name and, in
-`auth_mode=eos`, the `DesiredPlayerSessions[].PlayerId`. The game picks the queue path when
-`GameSessionQueueName` is set (Docs/GameLift.md §6).
+and `terraform apply ... -var queue_name=frontendui-dev` on the proxy: the Lambda allows
+`StartGameSessionPlacement` / `DescribeGameSessionPlacement` / `StopGameSessionPlacement`, pins the
+queue name and, in `auth_mode=eos`, the `DesiredPlayerSessions[].PlayerId`. The game picks the queue
+path when `GameSessionQueueName` is set, and sends the Stop when it abandons a placement that is
+still `PENDING` so GameLift does not fulfil it later for a host who left (Docs/GameLift.md §6).
 
 ## GameLift client proxy (`environments/gamelift-proxy`)
 

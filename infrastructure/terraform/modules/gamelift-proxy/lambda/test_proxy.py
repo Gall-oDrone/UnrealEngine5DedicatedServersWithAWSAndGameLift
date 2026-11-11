@@ -205,3 +205,32 @@ def test_placement_rejects_extra_players(monkeypatch):
                         {"PlacementId": "p-2", "DesiredPlayerSessions": [{"PlayerId": "a"}, {"PlayerId": "b"}]})
     assert status == 400 and "Only the requesting player" in body["message"]
     assert calls == []
+
+
+def test_stop_placement_passes_through(monkeypatch):
+    """A client abandoning a PENDING placement cancels it; only its own PlacementId travels."""
+    proxy, calls = load(monkeypatch, ALIAS_ID=ALIAS, QUEUE_NAME="frontendui-dev")
+    status, _ = post(proxy, "GameLift.StopGameSessionPlacement", {"PlacementId": "p-3"})
+    assert status == 200
+    assert calls[-1] == ("GameLift.StopGameSessionPlacement", {"PlacementId": "p-3"})
+
+
+def test_stop_placement_still_needs_identity_in_eos_mode(monkeypatch):
+    proxy, calls, _ = load_eos(monkeypatch, QUEUE_NAME="frontendui-dev")
+    status, body = post(proxy, "GameLift.StopGameSessionPlacement", {"PlacementId": "p-4"})
+    assert status == 401 and body["__type"] == "UnauthorizedException"
+    assert calls == []
+    status, _ = post(proxy, "GameLift.StopGameSessionPlacement", {"PlacementId": "p-4"}, {"authorization": f"Bearer {GOOD}"})
+    assert status == 200 and calls[-1][1] == {"PlacementId": "p-4"}
+
+
+def test_allow_list_is_exactly_the_player_facing_set(monkeypatch):
+    proxy, _ = load(monkeypatch, FLEET_ID=FLEET)
+    assert proxy.ALLOWED_TARGETS == {
+        "GameLift.CreateGameSession",
+        "GameLift.DescribeGameSessions",
+        "GameLift.CreatePlayerSession",
+        "GameLift.StartGameSessionPlacement",
+        "GameLift.DescribeGameSessionPlacement",
+        "GameLift.StopGameSessionPlacement",
+    }
