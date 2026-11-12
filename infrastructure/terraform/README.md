@@ -155,7 +155,8 @@ cp terraform.tfvars.example terraform.tfvars
 # 2. Deploy (deploy.sh checks the snapshot tier, shows the hourly price, inits the S3 backend)
 ../../../scripts/deployment/deploy.sh
 
-# 3. WORK ...
+# 3. Build (see scripts/build/README.md): servers, and optionally the Shipping client
+../../../scripts/build/run-build.sh --ref master --also-windows [--windows-client]
 
 # 4. Tear down and VERIFY (exit code != 0 if anything billable remains)
 ../../../scripts/cleanup/cleanup.sh

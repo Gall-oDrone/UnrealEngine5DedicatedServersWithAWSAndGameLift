@@ -292,6 +292,7 @@ foreach ($Platform in $Platforms) {
         $entry.S3 = "s3://$S3Bucket/builds/$zipName"
         Log "uploaded $($entry.S3)"
         $Uploaded++
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue   # C: is 100 GB; zips live in S3 now
     }
     $Summary.Artifacts += $entry
 }
@@ -351,6 +352,7 @@ if ($WindowsClient) {
             $entry.S3 = "s3://$S3Bucket/builds/$zipName"
             Log "uploaded $($entry.S3)"
             $Uploaded++
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
         }
         $Summary.Artifacts += $entry
     }
