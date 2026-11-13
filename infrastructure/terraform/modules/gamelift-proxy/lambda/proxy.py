@@ -12,6 +12,10 @@ session queue trio (Start / Describe / Stop placement). Fleet / alias come from 
 environment (FLEET_ID / ALIAS_ID): if set, the proxy forces them onto every request so a
 shipped client cannot target someone else's fleet.
 
+One operation is answered here instead of being forwarded: Leaderboard.GetTop reads the top
+rows of a board from DynamoDB (LEADERBOARD_TABLE) and marks the caller's own row. It is
+read-only; nothing a client sends can change a score.
+
 No third-party dependencies: urllib + the SigV4 recipe from the AWS docs.
 """
 
@@ -62,6 +66,22 @@ QUEUE_NAME = os.environ.get("QUEUE_NAME", "")
 _ALIAS_CACHE = {"fleet_id": "", "expires": 0.0}
 _ALIAS_TTL_SECONDS = 300
 
+# Leaderboard (read-only). Table: partition key Board (S), sort key PlayerId (S), attributes
+# Score (N) and DisplayName (S); index LEADERBOARD_INDEX: Board (S) + Score (N). Empty table
+# name = the operation is reported as unsupported, which is what an older proxy answers too.
+LEADERBOARD_TABLE = os.environ.get("LEADERBOARD_TABLE", "")
+LEADERBOARD_INDEX = os.environ.get("LEADERBOARD_INDEX") or "ByScore"
+LEADERBOARD_REGION = os.environ.get("AWS_REGION") or REGION
+LEADERBOARD_BOARDS = {b.strip() for b in (os.environ.get("LEADERBOARD_BOARDS") or "Main").split(",") if b.strip()}
+LEADERBOARD_TARGETS = {"Leaderboard.GetTop"}
+LEADERBOARD_DEFAULT_LIMIT = 50
+LEADERBOARD_MAX_LIMIT = 100
+# Finding the rank of a caller outside the top rows counts the scores above theirs, one
+# 1 MB page (~10k rows) at a time. Past this many pages the rank is reported as a lower bound.
+_RANK_COUNT_MAX_PAGES = 8
+_INT32_MAX = 2**31 - 1
+_DISPLAY_NAME_MAX_CHARS = 32
+
 
 def _sign(key, msg):
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
@@ -74,7 +94,10 @@ def _signing_key(secret, date_stamp, region, service):
     return _sign(k_service, "aws4_request")
 
 
-def _sigv4_headers(target, body):
+def _sigv4_headers(target, body, service="gamelift", host=None, region=None, content_type="application/x-amz-json-1.1"):
+    """Headers for a signed JSON-protocol POST to `/`. Defaults are the GameLift call."""
+    host = host or HOST
+    region = region or REGION
     access_key = os.environ["AWS_ACCESS_KEY_ID"]
     secret_key = os.environ["AWS_SECRET_ACCESS_KEY"]
     session_token = os.environ.get("AWS_SESSION_TOKEN", "")
@@ -82,10 +105,9 @@ def _sigv4_headers(target, body):
     now = datetime.datetime.now(datetime.timezone.utc)
     amz_date = now.strftime("%Y%m%dT%H%M%SZ")
     date_stamp = now.strftime("%Y%m%d")
-    content_type = "application/x-amz-json-1.1"
     payload_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
 
-    canonical_headers = f"content-type:{content_type}\nhost:{HOST}\nx-amz-date:{amz_date}\n"
+    canonical_headers = f"content-type:{content_type}\nhost:{host}\nx-amz-date:{amz_date}\n"
     signed_headers = "content-type;host;x-amz-date"
     if session_token:
         canonical_headers += f"x-amz-security-token:{session_token}\n"
@@ -94,12 +116,12 @@ def _sigv4_headers(target, body):
     signed_headers += ";x-amz-target"
 
     canonical_request = f"POST\n/\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
-    scope = f"{date_stamp}/{REGION}/gamelift/aws4_request"
+    scope = f"{date_stamp}/{region}/{service}/aws4_request"
     string_to_sign = "AWS4-HMAC-SHA256\n{}\n{}\n{}".format(
         amz_date, scope, hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
     )
     signature = hmac.new(
-        _signing_key(secret_key, date_stamp, REGION, "gamelift"),
+        _signing_key(secret_key, date_stamp, region, service),
         string_to_sign.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
@@ -232,10 +254,145 @@ def _authenticate(headers):
     return account_id, None
 
 
+# ---- Leaderboard ---------------------------------------------------------------------------
+
+
+def _call_dynamodb(operation, payload):
+    """Signed POST to DynamoDB's JSON API. Returns (status, dict)."""
+    host = f"dynamodb.{LEADERBOARD_REGION}.amazonaws.com"
+    body = json.dumps(payload, separators=(",", ":"))
+    headers = _sigv4_headers(
+        f"DynamoDB_20120810.{operation}", body, service="dynamodb", host=host, region=LEADERBOARD_REGION,
+        content_type="application/x-amz-json-1.0",
+    )
+    request = urllib.request.Request(f"https://{host}/", data=body.encode("utf-8"), method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=8) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read().decode("utf-8") or "{}")
+        except ValueError:
+            return exc.code, {}
+
+
+def _leaderboard_unavailable(operation, status, data):
+    # The cause (missing table, IAM, throttling) goes to the log, not to the player.
+    print(f"leaderboard: DynamoDB {operation} failed: HTTP {status} {data.get('__type', '')} {data.get('message') or data.get('Message') or ''}")
+    return _error(502, "LeaderboardUnavailableException", "The leaderboard is temporarily unavailable")
+
+
+def _leaderboard_row(item):
+    """DynamoDB item -> (player_id, raw score as stored, row for the client)."""
+    raw_score = (item.get("Score") or {}).get("N", "0")
+    try:
+        score = int(float(raw_score))
+    except ValueError:
+        score = 0
+    name = (item.get("DisplayName") or {}).get("S", "").strip()[:_DISPLAY_NAME_MAX_CHARS] or "Player"
+    # The client holds scores in an int32.
+    row = {"DisplayName": name, "Score": max(-_INT32_MAX, min(score, _INT32_MAX))}
+    return (item.get("PlayerId") or {}).get("S", ""), raw_score, row
+
+
+def _count_scores_above(board, raw_score):
+    """How many rows of the board have a strictly higher score. Returns (count, complete)."""
+    query = {
+        "TableName": LEADERBOARD_TABLE,
+        "IndexName": LEADERBOARD_INDEX,
+        "KeyConditionExpression": "#b = :b AND #s > :s",
+        "ExpressionAttributeNames": {"#b": "Board", "#s": "Score"},
+        "ExpressionAttributeValues": {":b": {"S": board}, ":s": {"N": raw_score}},
+        "Select": "COUNT",
+    }
+    count = 0
+    for _ in range(_RANK_COUNT_MAX_PAGES):
+        status, data = _call_dynamodb("Query", query)
+        if status != 200:
+            print(f"leaderboard: rank count failed: HTTP {status} {data.get('__type', '')}")
+            return count, False
+        count += int(data.get("Count") or 0)
+        if not data.get("LastEvaluatedKey"):
+            return count, True
+        query["ExclusiveStartKey"] = data["LastEvaluatedKey"]
+    return count, False
+
+
+def _leaderboard_get_top(payload, account_id):
+    board = payload.get("Board") or "Main"
+    if not isinstance(board, str) or board not in LEADERBOARD_BOARDS:
+        return _error(400, "InvalidRequestException", f"Unknown leaderboard: {str(board)[:32]}")
+    try:
+        limit = int(payload.get("Limit", LEADERBOARD_DEFAULT_LIMIT))
+    except (TypeError, ValueError):
+        return _error(400, "InvalidRequestException", "Limit must be a number")
+    limit = max(1, min(limit, LEADERBOARD_MAX_LIMIT))
+
+    # Whose row to mark. With verified identities it is the token's account and nothing else;
+    # without auth the client may name itself, which only changes what it highlights locally.
+    if AUTH_MODE == "eos":
+        caller_id = account_id
+    else:
+        hint = payload.get("PlayerId")
+        caller_id = hint[:128] if isinstance(hint, str) else ""
+
+    status, data = _call_dynamodb("Query", {
+        "TableName": LEADERBOARD_TABLE,
+        "IndexName": LEADERBOARD_INDEX,
+        "KeyConditionExpression": "#b = :b",
+        "ExpressionAttributeNames": {"#b": "Board", "#p": "PlayerId", "#n": "DisplayName", "#s": "Score"},
+        "ExpressionAttributeValues": {":b": {"S": board}},
+        "ProjectionExpression": "#p, #n, #s",
+        "ScanIndexForward": False,
+        "Limit": limit,
+    })
+    if status != 200:
+        return _leaderboard_unavailable("Query", status, data)
+
+    # Competition ranking (1, 2, 2, 4): a row's rank is one more than the number of rows with a
+    # strictly higher score, all of which precede it in this descending prefix.
+    entries = []
+    caller = None
+    rank = 0
+    previous_score = None
+    for position, item in enumerate(data.get("Items") or [], start=1):
+        player_id, raw_score, row = _leaderboard_row(item)
+        if raw_score != previous_score:
+            rank, previous_score = position, raw_score
+        row["Rank"] = rank
+        if caller_id and player_id == caller_id:
+            row["IsCaller"] = True
+            caller = row
+        entries.append(row)  # the player id stays on this side of the API
+
+    if caller_id and caller is None:
+        status, got = _call_dynamodb("GetItem", {
+            "TableName": LEADERBOARD_TABLE,
+            "Key": {"Board": {"S": board}, "PlayerId": {"S": caller_id}},
+            "ProjectionExpression": "#n, #s",
+            "ExpressionAttributeNames": {"#n": "DisplayName", "#s": "Score"},
+        })
+        if status != 200:
+            # The board itself is still worth showing; only the caller's own row is missing.
+            print(f"leaderboard: GetItem for the caller failed: HTTP {status} {got.get('__type', '')}")
+        elif got.get("Item"):
+            _, raw_score, caller = _leaderboard_row(got["Item"])
+            above, complete = _count_scores_above(board, raw_score)
+            caller["Rank"] = above + 1
+            caller["IsCaller"] = True
+            if not complete:
+                caller["RankIsLowerBound"] = True
+
+    return _response(200, {"Board": board, "Entries": entries, "Caller": caller})
+
+
 def handler(event, _context):
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     target = headers.get("x-amz-target", "")
-    if target not in ALLOWED_TARGETS:
+    is_leaderboard = target in LEADERBOARD_TARGETS
+    if is_leaderboard and not LEADERBOARD_TABLE:
+        return _error(400, "UnsupportedOperationException", "The leaderboard is not configured on this proxy")
+    if target not in ALLOWED_TARGETS and not is_leaderboard:
         return _error(400, "UnsupportedOperationException", f"Unsupported target: {target or '<none>'}")
 
     account_id = ""
@@ -255,6 +412,13 @@ def handler(event, _context):
             raise ValueError("payload must be a JSON object")
     except ValueError as exc:
         return _error(400, "SerializationException", f"Invalid JSON body: {exc}")
+
+    if is_leaderboard:
+        try:
+            return _leaderboard_get_top(payload, account_id)
+        except urllib.error.URLError as exc:
+            print(f"leaderboard: could not reach DynamoDB: {exc.reason}")
+            return _error(502, "LeaderboardUnavailableException", "The leaderboard is temporarily unavailable")
 
     pinned = ALIAS_ID or FLEET_ID
     owner_fleet = _pinned_fleet_id() if pinned else ""

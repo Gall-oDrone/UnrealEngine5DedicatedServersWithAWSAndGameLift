@@ -59,3 +59,21 @@ variable "queue_name" {
   type        = string
   default     = ""
 }
+
+variable "enable_leaderboard" {
+  description = "Create the leaderboard table and let the proxy answer Leaderboard.GetTop from it (read-only for clients)."
+  type        = bool
+  default     = false
+}
+
+variable "leaderboard_boards" {
+  description = "Board names clients may ask for (the game's ELeaderboardCategory value names)."
+  type        = list(string)
+  default     = ["Main"]
+}
+
+variable "leaderboard_deletion_protection" {
+  description = "Refuse to delete the table (terraform destroy included). Turn on once the board holds scores worth keeping."
+  type        = bool
+  default     = false
+}

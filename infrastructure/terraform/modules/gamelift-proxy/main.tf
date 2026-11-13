@@ -1,5 +1,6 @@
 # gamelift-proxy: API Gateway HTTP API + Lambda that fronts the three player-facing GameLift
-# calls for Shipping clients (UFrontendGameLiftSettings.ApiEndpointUrl).
+# calls for Shipping clients (UFrontendGameLiftSettings.ApiEndpointUrl), and optionally a
+# read-only leaderboard in DynamoDB (enable_leaderboard).
 #
 # Cost: effectively $0 at tutorial scale (HTTP API $1 per million requests, Lambda free tier).
 # Nothing here bills while idle, so unlike the build box it is meant to stay deployed.
@@ -59,7 +60,7 @@ data "aws_iam_policy_document" "gamelift" {
       "gamelift:StartGameSessionPlacement",
       "gamelift:DescribeGameSessionPlacement",
       "gamelift:StopGameSessionPlacement", # client abandons a PENDING placement
-      "gamelift:DescribeAlias", # alias -> fleet resolution for the session-ownership check
+      "gamelift:DescribeAlias",            # alias -> fleet resolution for the session-ownership check
     ]
     # GameLift's resource-level support for these actions is partial; keep "*" for the
     # Describe call and let the Lambda pin the fleet in the payload instead.
@@ -98,6 +99,66 @@ resource "aws_iam_role_policy" "ssm" {
   policy = data.aws_iam_policy_document.ssm[0].json
 }
 
+# ---- Leaderboard (optional) ------------------------------------------------------------------
+#
+# One item per player per board: Board (S) + PlayerId (S) -> Score (N), DisplayName (S).
+# The ByScore index turns "top N of a board" into one Query (descending, Limit N) and "rank of a
+# player" into a COUNT of the scores above theirs. On-demand billing: $0 while nobody plays.
+# All boards of this size live happily in one index partition; a board with millions of players
+# would shard the index key (Board#0..9) and merge the top rows in the Lambda.
+
+resource "aws_dynamodb_table" "leaderboard" {
+  count        = var.enable_leaderboard ? 1 : 0
+  name         = "${var.project_name}-leaderboard"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "Board"
+  range_key    = "PlayerId"
+
+  attribute {
+    name = "Board"
+    type = "S"
+  }
+  attribute {
+    name = "PlayerId"
+    type = "S"
+  }
+  attribute {
+    name = "Score"
+    type = "N"
+  }
+
+  global_secondary_index {
+    name               = "ByScore"
+    hash_key           = "Board"
+    range_key          = "Score"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["DisplayName"]
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  deletion_protection_enabled = var.leaderboard_deletion_protection
+}
+
+# Read-only on purpose: nothing a game client sends through the proxy can write a score.
+data "aws_iam_policy_document" "leaderboard" {
+  count = var.enable_leaderboard ? 1 : 0
+  statement {
+    sid       = "LeaderboardRead"
+    actions   = ["dynamodb:Query", "dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.leaderboard[0].arn, "${aws_dynamodb_table.leaderboard[0].arn}/index/ByScore"]
+  }
+}
+
+resource "aws_iam_role_policy" "leaderboard" {
+  count  = var.enable_leaderboard ? 1 : 0
+  name   = "leaderboard-read"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.leaderboard[0].json
+}
+
 resource "aws_iam_role_policy_attachment" "logs" {
   role       = aws_iam_role.lambda.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -130,6 +191,9 @@ resource "aws_lambda_function" "proxy" {
       AUTH_MODE               = var.auth_mode
       EOS_CLIENT_ID           = var.eos_client_id
       EOS_CLIENT_SECRET_PARAM = var.eos_client_secret_ssm_parameter
+      LEADERBOARD_TABLE       = var.enable_leaderboard ? aws_dynamodb_table.leaderboard[0].name : ""
+      LEADERBOARD_INDEX       = "ByScore"
+      LEADERBOARD_BOARDS      = join(",", var.leaderboard_boards)
     }
   }
 

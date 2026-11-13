@@ -14,3 +14,8 @@ output "lambda_log_group" {
 output "proxy_api_id" {
   value = aws_apigatewayv2_api.proxy.id
 }
+
+output "leaderboard_table_name" {
+  description = "Empty when enable_leaderboard is false."
+  value       = var.enable_leaderboard ? aws_dynamodb_table.leaderboard[0].name : ""
+}
