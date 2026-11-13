@@ -71,6 +71,9 @@ aws ssm put-parameter --name /frontendui/eos/artifacts --type SecureString --ove
   --value '+Artifacts=(ArtifactName="FrontendUI",ClientId="xyz...",ClientSecret="...",ProductId="...",SandboxId="...",DeploymentId="...",EncryptionKey="0000...")'
 ```
 
+The values are written **quoted** (`ApiEndpointUrl="https://…/"`): UE's ini parser treats an unquoted
+`//` as a trailing comment, which turned the endpoint into `https:` in the first package.
+
 The UAT line is `BuildCookRun -platform=Win64 -clientconfig=Shipping -build -cook -stage -pak`;
 the stage lands in `Saved\StagedBuilds\Windows` and is uploaded as
 `builds/FrontendUI-WindowsClient-Shipping-<sha>-<stamp>.zip` (`Windows\FrontendUI.exe` is the
