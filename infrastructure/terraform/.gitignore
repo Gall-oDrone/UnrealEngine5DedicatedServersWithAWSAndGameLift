@@ -57,3 +57,5 @@ terraform.rc
 .Trashes
 ehthumbs.db
 Thumbs.db
+# ...except the non-secret values the CI workflow applies environments/dev with
+!environments/dev/ci.tfvars

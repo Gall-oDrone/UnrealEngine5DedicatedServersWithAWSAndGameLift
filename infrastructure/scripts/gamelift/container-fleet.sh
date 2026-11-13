@@ -4,12 +4,15 @@
 #
 #   container-fleet.sh create  [--image-tag <sha>] [--instance-type c6i.xlarge] [--min 1] [--max 2]
 #                              [--target 50] [--alias <alias-id>] [--cidr 0.0.0.0/0]
+#   container-fleet.sh cgd     --image-tag <sha> [--fleet-id <containerfleet-id>]   # new CGD version only (CI)
 #   container-fleet.sh status  [--fleet-id <containerfleet-id>]      # default: the fleet the alias points at
 #   container-fleet.sh delete  --fleet-id <containerfleet-id> [--alias <alias-id> --restore-fleet <fleet-id>]
 #
 # create:  CGD version for the image (new version only if the tag changed) -> fleet -> wait ACTIVE
 #          -> capacity min/max -> target-tracking policy on PercentAvailableGameSessions
 #          -> optional alias switch -> prints a client-free smoke test.
+# cgd:     CGD version for the image, nothing billable; with --fleet-id also starts the rolling
+#          deployment of that version onto the running fleet (~10 min) and waits for it.
 # delete:  optional alias restore -> delete fleet -> wait until gone. The CGD and ECR image stay.
 #
 # Billing: >= min instances x instance price from create until delete. Default c6i.xlarge
@@ -38,7 +41,7 @@ while [[ $# -gt 0 ]]; do
     --cidr) CIDR="$2"; shift 2 ;;
     --fleet-id) FLEET_ID="$2"; shift 2 ;;
     --restore-fleet) RESTORE_FLEET="$2"; shift 2 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -130,6 +133,24 @@ tear down: $0 delete --fleet-id $FLEET_ID${ALIAS:+ --alias $ALIAS --restore-flee
 EOF
     ;;
 
+  cgd)
+    [[ "$IMAGE_TAG" != "latest" ]] || { echo "--image-tag <sha> required" >&2; exit 2; }
+    ensure_cgd_version
+    CGD_VERSION=$(gl describe-container-group-definition --name "$CGD_NAME" --query 'ContainerGroupDefinition.VersionNumber' --output text)
+    log "CGD $CGD_NAME version $CGD_VERSION -> $CGD_ARN"
+    if [[ -n "$FLEET_ID" ]]; then
+      log "rolling version $CGD_VERSION onto $FLEET_ID"
+      gl update-container-fleet --fleet-id "$FLEET_ID" --game-server-container-group-definition-name "$CGD_NAME" >/dev/null
+      for _ in $(seq 1 60); do
+        d=$(deployment_status "$FLEET_ID"); log "deployment=$d"
+        [[ "$d" == "COMPLETE" ]] && break
+        [[ "$d" == "ROLLBACK_COMPLETE" || "$d" == "CANCELLED" ]] && { echo "deployment ended with $d" >&2; exit 1; }
+        sleep 20
+      done
+    fi
+    echo "cgd_version=$CGD_VERSION"
+    ;;
+
   status)
     if [[ -z "$FLEET_ID" && -n "$ALIAS" ]]; then FLEET_ID=$(gl describe-alias --alias-id "$ALIAS" --query 'Alias.RoutingStrategy.FleetId' --output text); fi
     [[ -n "$FLEET_ID" ]] || { echo "--fleet-id or --alias required" >&2; exit 2; }
@@ -155,5 +176,5 @@ EOF
     log "remaining container fleets: $(gl list-container-fleets --query 'length(ContainerFleets)' --output text)"
     ;;
 
-  *) sed -n '2,16p' "$0"; exit 2 ;;
+  *) sed -n '2,19p' "$0"; exit 2 ;;
 esac
