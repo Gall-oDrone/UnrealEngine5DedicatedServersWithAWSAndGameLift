@@ -89,6 +89,43 @@ Measured 2026-11-11 (`5a0dbd7`, fresh snapshot restore, `c6i.4xlarge`):
 | `--windows-client --client-only` on the same box (982 Shipping compile actions + cook/stage/pak) | 43 min + 1 min zip/upload |
 | Whole session incl. `terraform apply` / `destroy` | 2 h 05 min, ≈ $1.6 |
 
+## CI: `.github/workflows/server-image.yml`
+
+The same session as a single manual trigger, on GitHub's runners, with no AWS keys in GitHub:
+
+```
+workflow_dispatch -> terraform apply environments/dev (ci.tfvars) -> run-build.sh over SSM
+  -> Linux zip in S3 -> publish-server-image.sh (docker build/push to ECR)
+  -> container-fleet.sh cgd (new container group definition version, optional roll-out)
+  -> terraform destroy (always) -> audit: no instance/volume tagged Project=ue5-compilation-dev left
+```
+
+```bash
+gh workflow run server-image.yml -f ref=master                       # Linux server -> image -> CGD version
+gh workflow run server-image.yml -f ref=master -f also_windows=true -f windows_client=true
+gh workflow run server-image.yml -f ref=master -f rollout_fleet_id=containerfleet-...   # + rolling deployment
+gh workflow run server-image.yml -f dry_run=true                     # credentials, state, plan; nothing created
+gh run watch                                                         # the job summary lists zip, image, CGD version
+```
+
+| Piece | What |
+|---|---|
+| `environments/github-oidc` | GitHub OIDC provider + role `frontendui-github-ci`, trusted only by this repository's workflows. EC2 limited to `us-east-1` plus an instance-type allow-list (`c6i.2xlarge/4xlarge/8xlarge`), IAM / log groups / alarms by the `ue5-compilation-dev` prefix, S3 state and artifacts, ECR push on `frontendui-server`, GameLift CGD and fleet updates. `terraform output -raw role_arn` is the `AWS_ROLE_ARN` in the workflow. |
+| `environments/dev/ci.tfvars` | The variable set the workflow applies with: SSM only, no key pair, no public CIDR, no SNS. Committed on purpose (nothing secret). |
+| Repository variables | `GAMELIFT_ENDPOINT_URL`, `GAMELIFT_ALIAS_ID`, `GAMELIFT_LOCATION`, `GAMELIFT_QUEUE_NAME` for `windows_client=true` (`gh variable set ...`). |
+| `publish-server-image.sh` | `--zip s3://.../FrontendUI-LinuxServer-<sha>-<stamp>.zip --game-dir <game checkout>`: unzip, `docker build` with the game repo's Dockerfile, push `<account>.dkr.ecr.us-east-1.amazonaws.com/frontendui-server:<sha>`. |
+| `container-fleet.sh cgd` | `--image-tag <sha> [--fleet-id <containerfleet-id>]`: new CGD version only if the image changed; with a fleet id, a rolling deployment that is waited for. |
+
+One run at a time (`concurrency: server-image` - the dev environment is one Terraform state).
+The destroy step is `always()`; if the audit after it finds anything alive the job fails red, which is
+the signal to run `scripts/cleanup/cleanup.sh`. Cost per run: the box for 1-2 h (~$0.7-1.5); runner
+minutes are free on a public repository. The game repo is checked out sparsely (Dockerfile,
+`docker/`, `.dockerignore`) at the same `ref` that was built.
+
+First run (2026-11-13, `ref=master` @ `2d1bb88`): 54 min from trigger to green - box up 18:05, Linux
+server built in 43 min, zip uploaded 18:55, box destroyed and audited 18:56, image pushed, CGD
+version 5 `READY` 18:58. Box time 51 min, ~$0.6.
+
 ## Notes
 
 - The script finds the engine by scanning each fixed volume one directory deep for

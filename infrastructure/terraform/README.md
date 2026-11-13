@@ -13,12 +13,16 @@ infrastructure/terraform/
 │   │   ├── backend.hcl             # bucket/key/region for `terraform init`
 │   │   ├── variables.tf
 │   │   ├── outputs.tf
-│   │   └── terraform.tfvars.example
+│   │   ├── terraform.tfvars.example
+│   │   └── ci.tfvars               # the (non-secret) values the GitHub workflow applies with
 │   ├── gamelift-proxy/             # API Gateway + Lambda for Shipping clients - long-lived (~$0 idle)
 │   │   ├── main.tf
 │   │   └── backend.hcl             # same bucket, separate state key
-│   └── gamelift-observability/     # CloudWatch dashboard + alarms + SNS e-mail - long-lived (~$0)
-│       ├── main.tf                 # reads the proxy stack's remote state for the API/Lambda ids
+│   ├── gamelift-observability/     # CloudWatch dashboard + alarms + SNS e-mail - long-lived (~$0)
+│   │   ├── main.tf                 # reads the proxy stack's remote state for the API/Lambda ids
+│   │   └── backend.hcl
+│   └── github-oidc/                # GitHub Actions OIDC provider + CI role - long-lived (free)
+│       ├── main.tf                 # see scripts/build/README.md "CI"
 │       └── backend.hcl
 └── modules/
     ├── networking/
