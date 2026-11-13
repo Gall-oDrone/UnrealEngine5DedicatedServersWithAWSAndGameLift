@@ -1,0 +1,180 @@
+# Build the FrontendUI dedicated server on the EC2 build box and publish the server image.
+#
+#   workflow_dispatch -> terraform apply environments/dev (the box) -> run-build.sh over SSM
+#   -> Linux zip in S3 -> docker build/push to ECR -> new container group definition version
+#   -> optional rolling deployment onto a running container fleet -> terraform destroy (always)
+#   -> audit that nothing billable is left.
+#
+# Credentials: the frontendui-github-ci role via OIDC (environments/github-oidc) - no keys in
+# GitHub. One run at a time (concurrency group): the dev environment is a single Terraform state.
+# Cost: ~1-2 h of c6i.4xlarge (~$0.7-1.5) per run; runner minutes are free on a public repo.
+name: Server image
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Game repo ref to build (branch, tag or sha)"
+        default: master
+        type: string
+      also_windows:
+        description: "Also build the Windows server zip"
+        default: false
+        type: boolean
+      windows_client:
+        description: "Also build the Shipping Windows client (GAMELIFT_* repo variables + SSM artifact)"
+        default: false
+        type: boolean
+      cgd_version:
+        description: "Publish a new container group definition version for the image"
+        default: true
+        type: boolean
+      rollout_fleet_id:
+        description: "Container fleet to roll the new version onto (empty = none)"
+        default: ""
+        type: string
+      dry_run:
+        description: "Only check credentials, state access and the plan; no box, no build"
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: server-image
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::326105557351:role/frontendui-github-ci
+  GAME_REPO: Gall-oDrone/Tutorial-FrontendUI-Experience-In-UnrealEngine-5-Using-C-And-Common-UI
+  TF_DIR: infrastructure/terraform/environments/dev
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Checkout game repo (Dockerfile only)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GAME_REPO }}
+          ref: ${{ inputs.ref }}
+          path: game
+          sparse-checkout: |
+            Dockerfile
+            .dockerignore
+            docker
+          sparse-checkout-cone-mode: false
+
+      - name: AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: server-image-${{ github.run_id }}
+          role-duration-seconds: 18000
+
+      - name: Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.1"   # >= the version that last wrote the dev state
+          terraform_wrapper: false
+
+      - name: Terraform init + plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false -backend-config=backend.hcl
+          terraform plan -input=false -var-file=ci.tfvars -out=tfplan -no-color | tail -n 5
+
+      - name: Dry run - credentials and reachability only
+        if: ${{ inputs.dry_run }}
+        run: |
+          aws sts get-caller-identity --query Arn --output text
+          aws s3 ls "s3://ue5-artifacts-326105557351-us-east-1/builds/" | tail -n 3
+          aws ecr describe-repositories --repository-names frontendui-server --query 'repositories[0].repositoryUri' --output text
+          aws gamelift describe-container-group-definition --name frontendui-server --query 'ContainerGroupDefinition.[VersionNumber,Status]' --output text
+          echo "dry run OK - plan above, nothing created" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the build box
+        if: ${{ !inputs.dry_run }}
+        id: box
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform apply -input=false -auto-approve tfplan | grep -E "Apply complete|Error" || true
+          echo "instance_id=$(terraform output -raw instance_id)" >> "$GITHUB_OUTPUT"
+
+      - name: Build on the box (SSM)
+        if: ${{ !inputs.dry_run }}
+        id: build
+        working-directory: infrastructure/scripts/build
+        env:
+          GAMELIFT_ENDPOINT_URL: ${{ vars.GAMELIFT_ENDPOINT_URL }}
+          GAMELIFT_ALIAS_ID: ${{ vars.GAMELIFT_ALIAS_ID }}
+          GAMELIFT_LOCATION: ${{ vars.GAMELIFT_LOCATION }}
+          GAMELIFT_QUEUE_NAME: ${{ vars.GAMELIFT_QUEUE_NAME }}
+        run: |
+          args=(--instance "${{ steps.box.outputs.instance_id }}" --ref "${{ inputs.ref }}")
+          [[ "${{ inputs.also_windows }}" == "true" ]] && args+=(--also-windows)
+          [[ "${{ inputs.windows_client }}" == "true" ]] && args+=(--windows-client)
+          ./run-build.sh "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/run-build.log"
+          sha=$(grep -o -m1 'checked out .* @ [0-9a-f]*' "$RUNNER_TEMP/run-build.log" | awk '{print $NF}')
+          linux_zip=$(grep -o -m1 's3://[^ ]*/builds/FrontendUI-LinuxServer-[^ ]*\.zip' "$RUNNER_TEMP/run-build.log" || true)
+          windows_zip=$(grep -o -m1 's3://[^ ]*/builds/FrontendUI-WindowsServer-[^ ]*\.zip' "$RUNNER_TEMP/run-build.log" || true)
+          client_zip=$(grep -o -m1 's3://[^ ]*/builds/FrontendUI-WindowsClient-[^ ]*\.zip' "$RUNNER_TEMP/run-build.log" || true)
+          [[ -n "$sha" && -n "$linux_zip" ]] || { echo "could not find the commit or the Linux zip in the build output" >&2; exit 1; }
+          { echo "sha=$sha"; echo "linux_zip=$linux_zip"; echo "windows_zip=$windows_zip"; echo "client_zip=$client_zip"; } >> "$GITHUB_OUTPUT"
+
+      - name: Destroy the build box
+        if: ${{ always() && !inputs.dry_run }}
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform destroy -input=false -auto-approve -var-file=ci.tfvars -no-color | grep -E "Destroy complete|Error" || true
+          left=$(aws ec2 describe-instances --filters "Name=tag:Project,Values=ue5-compilation-dev" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query 'length(Reservations[].Instances[])' --output text)
+          vols=$(aws ec2 describe-volumes --filters "Name=tag:Project,Values=ue5-compilation-dev" --query 'length(Volumes)' --output text)
+          echo "audit: instances=$left volumes=$vols"
+          [[ "$left" == "0" && "$vols" == "0" ]] || { echo "::error::billable resources left behind - run infrastructure/scripts/cleanup/cleanup.sh"; exit 1; }
+
+      - name: Server image -> ECR
+        if: ${{ !inputs.dry_run }}
+        id: image
+        run: |
+          out=$(infrastructure/scripts/build/publish-server-image.sh --zip "${{ steps.build.outputs.linux_zip }}" --game-dir "$GITHUB_WORKSPACE/game" --tag "${{ steps.build.outputs.sha }}" | tee /dev/stderr)
+          echo "$out" | grep -E '^(image|tag)=' >> "$GITHUB_OUTPUT"
+
+      - name: Container group definition version
+        if: ${{ !inputs.dry_run && inputs.cgd_version }}
+        id: cgd
+        run: |
+          args=(cgd --image-tag "${{ steps.image.outputs.tag }}")
+          [[ -n "${{ inputs.rollout_fleet_id }}" ]] && args+=(--fleet-id "${{ inputs.rollout_fleet_id }}")
+          out=$(infrastructure/scripts/gamelift/container-fleet.sh "${args[@]}" | tee /dev/stderr)
+          echo "$out" | grep -E '^cgd_version=' >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: ${{ always() && !inputs.dry_run }}
+        run: |
+          {
+            echo "## Server image - ${{ inputs.ref }} @ ${{ steps.build.outputs.sha }}"
+            echo
+            echo "| Artifact | Value |"
+            echo "|---|---|"
+            echo "| Linux server zip | \`${{ steps.build.outputs.linux_zip }}\` |"
+            [[ -n "${{ steps.build.outputs.windows_zip }}" ]] && echo "| Windows server zip | \`${{ steps.build.outputs.windows_zip }}\` |"
+            [[ -n "${{ steps.build.outputs.client_zip }}" ]] && echo "| Shipping client zip | \`${{ steps.build.outputs.client_zip }}\` |"
+            echo "| Image | \`${{ steps.image.outputs.image }}\` |"
+            [[ -n "${{ steps.cgd.outputs.cgd_version }}" ]] && echo "| CGD \`frontendui-server\` version | ${{ steps.cgd.outputs.cgd_version }} |"
+            [[ -n "${{ inputs.rollout_fleet_id }}" ]] && echo "| Rolled onto | \`${{ inputs.rollout_fleet_id }}\` |"
+            echo
+            echo "Build box destroyed; audit passed if this job is green."
+          } >> "$GITHUB_STEP_SUMMARY"
