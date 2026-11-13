@@ -315,13 +315,15 @@ if ($WindowsClient) {
     if (-not $artifacts) { Log "WARNING: SSM parameter '$EosArtifactsParameter' not found or empty; client will use the Null subsystem and the plain GameLift backend" }
 
     $backend = if ($artifacts) { "/Script/FrontendMultiplayerOSS.FrontendSessionBackend_GameLiftEOS" } else { "/Script/FrontendMultiplayer.FrontendSessionBackend_GameLift" }
+    # Quote the string values: UE's ini parser treats an unquoted // as a trailing comment, which
+    # turned https://xxxx.execute-api.../ into "https:" in the first Shipping client (2026-11-13).
     $gameLines = @("", "; --- appended by build-linux-server.ps1 for the $ClientConfig client build; not committed ---",
         "[/Script/FrontendMultiplayer.FrontendMultiplayerSettings]", "SessionBackendClass=$backend", "",
         "[/Script/FrontendMultiplayer.FrontendGameLiftSettings]", "AwsRegion=$GameLiftRegion")
-    if ($GameLiftEndpoint) { $gameLines += "ApiEndpointUrl=$GameLiftEndpoint" }
-    if ($GameLiftAlias)    { $gameLines += "AliasId=$GameLiftAlias" }
-    if ($GameLiftLocation) { $gameLines += "Location=$GameLiftLocation" }
-    if ($GameLiftQueue)    { $gameLines += "GameSessionQueueName=$GameLiftQueue" }
+    if ($GameLiftEndpoint) { $gameLines += "ApiEndpointUrl=`"$GameLiftEndpoint`"" }
+    if ($GameLiftAlias)    { $gameLines += "AliasId=`"$GameLiftAlias`"" }
+    if ($GameLiftLocation) { $gameLines += "Location=`"$GameLiftLocation`"" }
+    if ($GameLiftQueue)    { $gameLines += "GameSessionQueueName=`"$GameLiftQueue`"" }
     Add-Content -Path $gameIni -Value ($gameLines -join "`r`n")
     if ($artifacts) {
         $engineLines = @("", "; --- appended by build-linux-server.ps1 for the $ClientConfig client build; not committed ---",
