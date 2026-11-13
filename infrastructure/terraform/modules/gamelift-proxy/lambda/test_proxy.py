@@ -19,7 +19,7 @@ FOREIGN_SESSION = "arn:aws:gamelift:us-east-1::gamesession/fleet-other/custom-x/
 
 
 def load(monkeypatch, **env):
-    for k in ("FLEET_ID", "ALIAS_ID", "QUEUE_NAME", "AUTH_MODE", "EOS_CLIENT_ID"):
+    for k in ("FLEET_ID", "ALIAS_ID", "QUEUE_NAME", "AUTH_MODE", "EOS_CLIENT_ID", "LEADERBOARD_TABLE", "LEADERBOARD_INDEX", "LEADERBOARD_BOARDS"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
@@ -234,3 +234,190 @@ def test_allow_list_is_exactly_the_player_facing_set(monkeypatch):
         "GameLift.DescribeGameSessionPlacement",
         "GameLift.StopGameSessionPlacement",
     }
+
+
+# ---- leaderboard (DynamoDB stubbed) ------------------------------------------------------
+
+TABLE = "frontendui-leaderboard"
+ME = "acc0123456789"  # the account behind GOOD (see load_eos)
+
+
+def item(player_id, name, score):
+    return {"PlayerId": {"S": player_id}, "DisplayName": {"S": name}, "Score": {"N": str(score)}}
+
+
+def fake_dynamodb(monkeypatch, proxy, rows, count_pages=None, fail=None):
+    """rows: (player_id, name, score) in any order. Answers Query (top / COUNT) and GetItem."""
+    ddb = []
+    by_score = sorted(rows, key=lambda r: -r[2])
+    pages = list(count_pages or [])
+
+    def call(operation, payload):
+        ddb.append((operation, payload))
+        if fail and operation == fail[0]:
+            return fail[1], {"__type": "com.amazonaws.dynamodb.v20120810#AccessDeniedException", "Message": "secret table arn"}
+        if operation == "Query" and payload.get("Select") == "COUNT":
+            if pages:
+                count, more = pages.pop(0)
+                return 200, {"Count": count, **({"LastEvaluatedKey": {"Board": {"S": "Main"}}} if more else {})}
+            floor = float(payload["ExpressionAttributeValues"][":s"]["N"])
+            return 200, {"Count": sum(1 for r in rows if r[2] > floor)}
+        if operation == "Query":
+            return 200, {"Items": [item(*r) for r in by_score[: payload["Limit"]]]}
+        if operation == "GetItem":
+            wanted = payload["Key"]["PlayerId"]["S"]
+            found = [r for r in rows if r[0] == wanted]
+            return 200, ({"Item": item(*found[0])} if found else {})
+        raise AssertionError(f"unexpected DynamoDB operation {operation}")
+
+    monkeypatch.setattr(proxy, "_call_dynamodb", call)
+    return ddb
+
+
+BOARD = [("p1", "Valkyrie", 900), ("p2", "Ronin", 700), ("p3", "Cinder", 700), ("p4", "Specter", 400), (ME, "Dgallo", 150)]
+
+
+def test_leaderboard_unsupported_without_table(monkeypatch):
+    proxy, calls = load(monkeypatch, FLEET_ID=FLEET)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "Main"})
+    assert status == 400 and body["__type"] == "UnsupportedOperationException"
+    assert ddb == [] and calls == []
+
+
+def test_leaderboard_needs_identity_in_eos_mode(monkeypatch):
+    proxy, calls, _ = load_eos(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "Main"})
+    assert status == 401 and body["__type"] == "UnauthorizedException"
+    assert ddb == [] and calls == []
+
+
+def test_leaderboard_top_rows_ranked_and_anonymous(monkeypatch):
+    proxy, calls = load(monkeypatch, FLEET_ID=FLEET, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "Main", "Limit": 4})
+    assert status == 200 and body["Board"] == "Main" and body["Caller"] is None
+    # competition ranking: the two 700s share rank 2, the next row is 4
+    assert [(e["Rank"], e["DisplayName"], e["Score"]) for e in body["Entries"]] == [
+        (1, "Valkyrie", 900), (2, "Ronin", 700), (2, "Cinder", 700), (4, "Specter", 400)]
+    assert "PlayerId" not in json.dumps(body)  # ids never leave the proxy
+    assert calls == []  # nothing goes to GameLift
+    (operation, query), = ddb  # no caller -> exactly one read
+    assert operation == "Query" and query["TableName"] == TABLE and query["IndexName"] == "ByScore"
+    assert query["ScanIndexForward"] is False and query["Limit"] == 4
+
+
+@pytest.mark.parametrize("limit,sent", [(1000, 100), (0, 1), (-5, 1), ("7", 7), (None, 50)])
+def test_leaderboard_limit_is_clamped(monkeypatch, limit, sent):
+    proxy, _ = load(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    payload = {"Board": "Main"} if limit is None else {"Board": "Main", "Limit": limit}
+    status, _ = post(proxy, "Leaderboard.GetTop", payload)
+    assert status == 200 and ddb[0][1]["Limit"] == sent
+
+
+@pytest.mark.parametrize("payload,why", [({"Board": "Main", "Limit": "lots"}, "Limit"), ({"Board": "Hidden"}, "Unknown leaderboard"), ({"Board": ["Main"]}, "Unknown leaderboard")])
+def test_leaderboard_rejects_bad_requests(monkeypatch, payload, why):
+    proxy, _ = load(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    status, body = post(proxy, "Leaderboard.GetTop", payload)
+    assert status == 400 and body["__type"] == "InvalidRequestException" and why in body["message"]
+    assert ddb == []
+
+
+def test_leaderboard_boards_come_from_the_environment(monkeypatch):
+    proxy, _ = load(monkeypatch, LEADERBOARD_TABLE=TABLE, LEADERBOARD_BOARDS="Main, Ranked")
+    ddb = fake_dynamodb(monkeypatch, proxy, [])
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "Ranked"})
+    assert status == 200 and body == {"Board": "Ranked", "Entries": [], "Caller": None}
+    assert ddb[0][1]["ExpressionAttributeValues"] == {":b": {"S": "Ranked"}}
+
+
+def test_leaderboard_marks_the_verified_caller_in_the_list(monkeypatch):
+    proxy, _, _ = load_eos(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    # the body names someone else: identity comes from the token, never from the client
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "Main", "Limit": 10, "PlayerId": "p1"}, {"authorization": f"Bearer {GOOD}"})
+    assert status == 200
+    flagged = [e for e in body["Entries"] if e.get("IsCaller")]
+    assert flagged == [{"DisplayName": "Dgallo", "Score": 150, "Rank": 5, "IsCaller": True}]
+    assert body["Caller"] == flagged[0]
+    assert [op for op, _ in ddb] == ["Query"]  # found in the list: no extra reads
+
+
+def test_leaderboard_caller_below_the_cut_gets_a_real_rank(monkeypatch):
+    proxy, _, _ = load_eos(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "Main", "Limit": 2}, {"authorization": f"Bearer {GOOD}"})
+    assert status == 200 and len(body["Entries"]) == 2 and not any(e.get("IsCaller") for e in body["Entries"])
+    assert body["Caller"] == {"DisplayName": "Dgallo", "Score": 150, "Rank": 5, "IsCaller": True}
+    assert [op for op, _ in ddb] == ["Query", "GetItem", "Query"]
+    assert ddb[1][1]["Key"] == {"Board": {"S": "Main"}, "PlayerId": {"S": ME}}
+    count = ddb[2][1]
+    assert count["Select"] == "COUNT" and count["ExpressionAttributeValues"][":s"] == {"N": "150"}
+
+
+def test_leaderboard_rank_count_follows_pages_and_admits_its_limit(monkeypatch):
+    proxy, _, _ = load_eos(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD, count_pages=[(9000, True), (3000, False)])
+    _, body = post(proxy, "Leaderboard.GetTop", {"Limit": 1}, {"authorization": f"Bearer {GOOD}"})
+    assert body["Caller"]["Rank"] == 12001 and "RankIsLowerBound" not in body["Caller"]
+    assert "ExclusiveStartKey" in ddb[-1][1]
+
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD, count_pages=[(10000, True)] * 20)
+    _, body = post(proxy, "Leaderboard.GetTop", {"Limit": 1}, {"authorization": f"Bearer {GOOD}"})
+    pages = proxy._RANK_COUNT_MAX_PAGES
+    assert body["Caller"]["Rank"] == pages * 10000 + 1 and body["Caller"]["RankIsLowerBound"] is True
+    assert sum(1 for op, q in ddb if q.get("Select") == "COUNT") == pages
+
+
+def test_leaderboard_caller_without_a_score(monkeypatch):
+    proxy, _, _ = load_eos(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD[:4])
+    status, body = post(proxy, "Leaderboard.GetTop", {"Limit": 10}, {"authorization": f"Bearer {GOOD}"})
+    assert status == 200 and body["Caller"] is None and len(body["Entries"]) == 4
+    assert [op for op, _ in ddb] == ["Query", "GetItem"]
+
+
+def test_leaderboard_none_mode_takes_the_highlight_hint_from_the_body(monkeypatch):
+    proxy, _ = load(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    fake_dynamodb(monkeypatch, proxy, BOARD)
+    _, body = post(proxy, "Leaderboard.GetTop", {"Limit": 10, "PlayerId": "p3"})
+    assert [e["DisplayName"] for e in body["Entries"] if e.get("IsCaller")] == ["Cinder"]
+    _, body = post(proxy, "Leaderboard.GetTop", {"Limit": 10, "PlayerId": {"not": "a string"}})
+    assert body["Caller"] is None
+
+
+def test_leaderboard_storage_errors_stay_in_the_log(monkeypatch):
+    proxy, _ = load(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    fake_dynamodb(monkeypatch, proxy, BOARD, fail=("Query", 400))
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "Main"})
+    assert status == 502 and body["__type"] == "LeaderboardUnavailableException"
+    assert "secret table arn" not in json.dumps(body) and TABLE not in json.dumps(body)
+
+
+def test_leaderboard_survives_a_failed_caller_lookup(monkeypatch):
+    proxy, _, _ = load_eos(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    fake_dynamodb(monkeypatch, proxy, BOARD, fail=("GetItem", 500))
+    status, body = post(proxy, "Leaderboard.GetTop", {"Limit": 2}, {"authorization": f"Bearer {GOOD}"})
+    assert status == 200 and len(body["Entries"]) == 2 and body["Caller"] is None
+
+
+def test_leaderboard_rows_are_sanitised(monkeypatch):
+    proxy, _ = load(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    rows = [("a", "N" * 80, 10**12), ("b", "   ", 12.9), ("c", "Low", -(10**12))]
+    fake_dynamodb(monkeypatch, proxy, rows)
+    _, body = post(proxy, "Leaderboard.GetTop", {"Limit": 10})
+    top, middle, bottom = body["Entries"]
+    assert top["Score"] == 2**31 - 1 and len(top["DisplayName"]) == 32
+    assert middle == {"DisplayName": "Player", "Score": 12, "Rank": 2}
+    assert bottom["Score"] == -(2**31 - 1)
+
+
+def test_dynamodb_requests_are_signed_for_dynamodb(monkeypatch):
+    proxy, _ = load(monkeypatch, LEADERBOARD_TABLE=TABLE)
+    h = proxy._sigv4_headers("DynamoDB_20120810.Query", "{}", service="dynamodb", host="dynamodb.us-east-1.amazonaws.com",
+                             region="us-east-1", content_type="application/x-amz-json-1.0")
+    assert "/us-east-1/dynamodb/aws4_request" in h["Authorization"]
+    assert h["Content-Type"] == "application/x-amz-json-1.0" and h["X-Amz-Target"] == "DynamoDB_20120810.Query"

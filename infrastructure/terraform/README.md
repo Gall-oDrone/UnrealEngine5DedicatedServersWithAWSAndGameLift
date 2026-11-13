@@ -128,6 +128,60 @@ side is `UFrontendSessionBackend_GameLiftEOS` (`GAMELIFT_AUTH=EOS` in LaunchInst
 The stage is throttled (20 rps / 50 burst by default) and only `POST /` is routed; everything
 else is 404. Logs: `/aws/lambda/frontendui-gamelift-proxy` and `/aws/apigateway/frontendui-gamelift-proxy`.
 
+### Changing a deployed proxy: `proxy-deploy.sh`, not bare `terraform apply`
+
+The stack keeps no tfvars (the EOS client id stays out of the repository), so its settings exist only
+as the `-var` flags of whoever applied last. A bare `terraform apply` resets all of them to defaults:
+`auth_mode` back to `none`, alias and queue pins dropped - the proxy would answer anyone. After the
+first deployment use the wrapper, which reads the live Lambda environment, feeds it back as
+`TF_VAR_*` and lets explicit `-var` flags override single values:
+
+```bash
+infrastructure/scripts/gamelift/proxy-deploy.sh plan                              # expect: no changes
+infrastructure/scripts/gamelift/proxy-deploy.sh apply -var enable_leaderboard=true
+```
+
+### Leaderboard (`-var enable_leaderboard=true`)
+
+Adds a DynamoDB table and one more operation on the same endpoint. Clients can only **read**.
+
+| | |
+|---|---|
+| Table | `frontendui-leaderboard`, on-demand, point-in-time recovery on. Key `Board` (S) + `PlayerId` (S); attributes `DisplayName` (S), `Score` (N), `UpdatedAt` (S) |
+| Index | `ByScore`: `Board` + `Score` (N), projects `DisplayName` - the top-N read is one descending Query |
+| Lambda role | `dynamodb:Query` / `GetItem` on the table and index, nothing else |
+| Idle cost | ~$0 (pay per request) |
+
+`X-Amz-Target: Leaderboard.GetTop`, body `{"Board":"Main","Limit":50}` (limit 1..100, clamped):
+
+```json
+{"Board":"Main",
+ "Entries":[{"Rank":1,"DisplayName":"...","Score":23390}, {"Rank":2,"DisplayName":"...","Score":22780,"IsCaller":true}],
+ "Caller":{"Rank":2,"DisplayName":"...","Score":22780,"IsCaller":true}}
+```
+
+- Ranks are competition ranks (1, 2, 2, 4). `Caller` is the asking player's own row, also when it is
+  outside the returned page (`null` when they have no row); `RankIsLowerBound` appears if the board
+  was too large to count in one request.
+- In `auth_mode=eos` the caller is the verified token's account and a `PlayerId` in the body is
+  ignored; with `auth_mode=none` the body's `PlayerId` is only a highlight hint.
+- Player ids are never returned.
+- Errors: `UnsupportedOperationException` (400) when the table is not enabled - the same answer an
+  older proxy gives, so the game treats both as "no leaderboard here"; `InvalidRequestException`
+  (unknown board); `LeaderboardUnavailableException` (502, the DynamoDB cause is in the Lambda log).
+
+There is **no write path for clients or servers yet**; rows come from the operator script:
+
+```bash
+infrastructure/scripts/gamelift/leaderboard.sh seed --count 25      # synthetic rows: ids seed-NNN, names "... (seed)"
+infrastructure/scripts/gamelift/leaderboard.sh top --limit 10       # what GetTop reads, with ids
+infrastructure/scripts/gamelift/leaderboard.sh put --player-id <Epic account id> --name <name> --score 12345
+infrastructure/scripts/gamelift/leaderboard.sh clear-seed           # deletes only the seed-* rows
+```
+
+Turning `enable_leaderboard` off again **deletes the table and its rows**; set
+`leaderboard_deletion_protection = true` in the module call once the board holds real scores.
+
 ## The UE 5.6 build environment lives in an *archived* snapshot
 
 | What | ID | Size | Tier | ~Cost |

@@ -41,6 +41,7 @@ module "proxy" {
   eos_client_id                   = var.eos_client_id
   eos_client_secret_ssm_parameter = var.eos_client_secret_ssm_parameter
   queue_name                      = var.queue_name
+  enable_leaderboard              = var.enable_leaderboard
 }
 
 variable "aws_region" {
@@ -80,6 +81,12 @@ variable "queue_name" {
   default = ""
 }
 
+variable "enable_leaderboard" {
+  description = "DynamoDB leaderboard table + Leaderboard.GetTop on the proxy (see modules/gamelift-proxy)."
+  type        = bool
+  default     = false
+}
+
 output "api_endpoint_url" {
   value = module.proxy.api_endpoint_url
 }
@@ -94,4 +101,8 @@ output "proxy_function_name" {
 
 output "proxy_api_id" {
   value = module.proxy.proxy_api_id
+}
+
+output "leaderboard_table_name" {
+  value = module.proxy.leaderboard_table_name
 }
