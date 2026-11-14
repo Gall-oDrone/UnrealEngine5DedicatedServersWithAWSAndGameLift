@@ -16,6 +16,12 @@ One operation is answered here instead of being forwarded: Leaderboard.GetTop re
 rows of a board from DynamoDB (LEADERBOARD_TABLE) and marks the caller's own row. It is
 read-only; nothing a client sends can change a score.
 
+Scores are written by Leaderboard.AddScore, which is not a player operation: the caller must
+present the dedicated servers' shared key (X-Server-Key, checked against an SSM SecureString),
+a player's bearer token does not open it. Even then the caller only names a PlayerSessionId and
+a number of points: who earned them, and whether that slot was ever really played on this
+fleet, is read from GameLift, and a player session can be rewarded once.
+
 No third-party dependencies: urllib + the SigV4 recipe from the AWS docs.
 """
 
@@ -81,6 +87,22 @@ LEADERBOARD_MAX_LIMIT = 100
 _RANK_COUNT_MAX_PAGES = 8
 _INT32_MAX = 2**31 - 1
 _DISPLAY_NAME_MAX_CHARS = 32
+
+# Score submission, for dedicated servers. LEADERBOARD_SERVER_KEY_PARAM names the SSM
+# SecureString holding the key servers send as X-Server-Key; empty = the operation does not
+# exist on this proxy. The key is re-read every few minutes so a rotation needs no redeploy.
+LEADERBOARD_SERVER_KEY_PARAM = os.environ.get("LEADERBOARD_SERVER_KEY_PARAM", "")
+LEADERBOARD_SERVER_TARGETS = {"Leaderboard.AddScore"}
+LEADERBOARD_MAX_POINTS_PER_AWARD = int(os.environ.get("LEADERBOARD_MAX_POINTS_PER_AWARD") or 1000)
+_SERVER_KEY = {"value": None, "expires": 0.0}
+_SERVER_KEY_TTL_SECONDS = 300
+_SERVER_KEY_MIN_CHARS = 16
+# "This player session was already rewarded" markers live in the same table under a Board value
+# no client can ask for; they carry no Score, so the ByScore index never sees them. They expire
+# (table TTL on ExpiresAt) long after GameLift has forgotten the player session.
+_AWARD_MARKER_BOARD_PREFIX = "~award#"
+_AWARD_MARKER_TTL_SECONDS = 90 * 24 * 3600
+_REWARDABLE_PLAYER_SESSION_STATUSES = {"ACTIVE", "COMPLETED"}  # i.e. a server accepted it
 
 
 def _sign(key, msg):
@@ -386,17 +408,131 @@ def _leaderboard_get_top(payload, account_id):
     return _response(200, {"Board": board, "Entries": entries, "Caller": caller})
 
 
+def _leaderboard_server_key():
+    """The key dedicated servers must present, from SSM. Cached for a few minutes."""
+    import time
+
+    now = time.time()
+    if _SERVER_KEY["value"] is not None and now < _SERVER_KEY["expires"]:
+        return _SERVER_KEY["value"]
+    import boto3  # stock Lambda runtime ships it
+
+    value = boto3.client("ssm").get_parameter(Name=LEADERBOARD_SERVER_KEY_PARAM, WithDecryption=True)["Parameter"]["Value"].strip()
+    _SERVER_KEY.update(value=value, expires=now + _SERVER_KEY_TTL_SECONDS)
+    return value
+
+
+def _authenticate_server(headers):
+    """None when the caller holds the server key, otherwise the error response."""
+    try:
+        expected = _leaderboard_server_key()
+    except Exception as exc:  # missing parameter, no permission: refuse everyone, say why in the log
+        print(f"leaderboard: could not read the server key ({type(exc).__name__})")
+        return _error(502, "LeaderboardUnavailableException", "The leaderboard is temporarily unavailable")
+    presented = headers.get("x-server-key", "")
+    # A short or empty configured key opens nothing, whatever is presented.
+    if len(expected) < _SERVER_KEY_MIN_CHARS or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        return _error(403, "AccessDeniedException", "This operation is for dedicated servers")
+    return None
+
+
+def _clean_display_name(value):
+    if not isinstance(value, str):
+        return "Player"
+    name = "".join(ch for ch in value if ch.isprintable()).strip()[:_DISPLAY_NAME_MAX_CHARS]
+    return name or "Player"
+
+
+def _leaderboard_add_score(payload):
+    board = payload.get("Board") or "Main"
+    if not isinstance(board, str) or board not in LEADERBOARD_BOARDS:
+        return _error(400, "InvalidRequestException", f"Unknown leaderboard: {str(board)[:32]}")
+    player_session_id = payload.get("PlayerSessionId")
+    if not isinstance(player_session_id, str) or not player_session_id.startswith("psess-") or len(player_session_id) > 64:
+        return _error(400, "InvalidRequestException", "PlayerSessionId is required")
+    points = payload.get("Points")
+    if isinstance(points, float) and points.is_integer():
+        points = int(points)
+    if isinstance(points, bool) or not isinstance(points, int) or not 1 <= points <= LEADERBOARD_MAX_POINTS_PER_AWARD:
+        return _error(400, "InvalidRequestException", f"Points must be a whole number from 1 to {LEADERBOARD_MAX_POINTS_PER_AWARD}")
+
+    # Who earned the points is GameLift's record of that slot, not anything the caller says: in
+    # auth_mode=eos its PlayerId is the Epic account this proxy verified when the slot was created.
+    status, raw = _call_gamelift("GameLift.DescribePlayerSessions", {"PlayerSessionId": player_session_id})
+    if status != 200:
+        print(f"leaderboard: DescribePlayerSessions {player_session_id} failed: HTTP {status} {raw[:200]}")
+        if status >= 500:
+            return _error(502, "LeaderboardUnavailableException", "The leaderboard is temporarily unavailable")
+        return _error(400, "InvalidRequestException", "Unknown player session")
+    sessions = json.loads(raw or "{}").get("PlayerSessions") or []
+    if not sessions:
+        return _error(400, "InvalidRequestException", "Unknown player session")
+    session = sessions[0]
+    fleet_id = _pinned_fleet_id()
+    if fleet_id and session.get("FleetId") != fleet_id:
+        return _error(400, "InvalidRequestException", "That player session does not belong to this fleet")
+    if session.get("Status") not in _REWARDABLE_PLAYER_SESSION_STATUSES:
+        return _error(400, "InvalidRequestException", f"That player session was never accepted by a server ({session.get('Status')})")
+    player_id = session.get("PlayerId") or ""
+    if not player_id:
+        return _error(400, "InvalidRequestException", "That player session has no player")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    name = _clean_display_name(payload.get("DisplayName"))
+    # One transaction: the marker is written only if this player session has none yet, and the
+    # score moves only if the marker was written. A repeated or replayed request changes nothing.
+    status, data = _call_dynamodb("TransactWriteItems", {"TransactItems": [
+        {"Put": {
+            "TableName": LEADERBOARD_TABLE,
+            "Item": {
+                "Board": {"S": _AWARD_MARKER_BOARD_PREFIX + board},
+                "PlayerId": {"S": player_session_id},
+                "AwardedTo": {"S": player_id},
+                "Points": {"N": str(points)},
+                "AwardedAt": {"S": stamp},
+                "ExpiresAt": {"N": str(int(now.timestamp()) + _AWARD_MARKER_TTL_SECONDS)},
+            },
+            "ConditionExpression": "attribute_not_exists(#p)",
+            "ExpressionAttributeNames": {"#p": "PlayerId"},
+        }},
+        {"Update": {
+            "TableName": LEADERBOARD_TABLE,
+            "Key": {"Board": {"S": board}, "PlayerId": {"S": player_id}},
+            "UpdateExpression": "SET #n = :name, #u = :now ADD #s :points",
+            "ExpressionAttributeNames": {"#s": "Score", "#n": "DisplayName", "#u": "UpdatedAt"},
+            "ExpressionAttributeValues": {":points": {"N": str(points)}, ":name": {"S": name}, ":now": {"S": stamp}},
+        }},
+    ]})
+    if status == 200:
+        print(f"leaderboard: +{points} on {board} for {player_id[:6]}... ({player_session_id})")
+        return _response(200, {"Board": board, "Awarded": True, "Points": points})
+    reasons = data.get("CancellationReasons") or []
+    if str(data.get("__type", "")).endswith("TransactionCanceledException") and reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+        print(f"leaderboard: {player_session_id} was already rewarded on {board}; nothing written")
+        return _response(200, {"Board": board, "Awarded": False, "Reason": "AlreadyAwarded"})
+    return _leaderboard_unavailable("TransactWriteItems", status, data)
+
+
 def handler(event, _context):
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     target = headers.get("x-amz-target", "")
     is_leaderboard = target in LEADERBOARD_TARGETS
+    is_server_operation = target in LEADERBOARD_SERVER_TARGETS
     if is_leaderboard and not LEADERBOARD_TABLE:
         return _error(400, "UnsupportedOperationException", "The leaderboard is not configured on this proxy")
-    if target not in ALLOWED_TARGETS and not is_leaderboard:
+    if is_server_operation and not (LEADERBOARD_TABLE and LEADERBOARD_SERVER_KEY_PARAM):
+        return _error(400, "UnsupportedOperationException", "Score submission is not configured on this proxy")
+    if target not in ALLOWED_TARGETS and not is_leaderboard and not is_server_operation:
         return _error(400, "UnsupportedOperationException", f"Unsupported target: {target or '<none>'}")
 
     account_id = ""
-    if AUTH_MODE == "eos":
+    if is_server_operation:
+        # Not a player operation: the server key decides, a bearer token is neither needed nor enough.
+        server_error = _authenticate_server(headers)
+        if server_error:
+            return server_error
+    elif AUTH_MODE == "eos":
         account_id, auth_error = _authenticate(headers)
         if auth_error:
             return auth_error
@@ -418,6 +554,13 @@ def handler(event, _context):
             return _leaderboard_get_top(payload, account_id)
         except urllib.error.URLError as exc:
             print(f"leaderboard: could not reach DynamoDB: {exc.reason}")
+            return _error(502, "LeaderboardUnavailableException", "The leaderboard is temporarily unavailable")
+
+    if is_server_operation:
+        try:
+            return _leaderboard_add_score(payload)
+        except urllib.error.URLError as exc:
+            print(f"leaderboard: could not reach GameLift or DynamoDB: {exc.reason}")
             return _error(502, "LeaderboardUnavailableException", "The leaderboard is temporarily unavailable")
 
     pinned = ALIAS_ID or FLEET_ID

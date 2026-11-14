@@ -143,7 +143,8 @@ infrastructure/scripts/gamelift/proxy-deploy.sh apply -var enable_leaderboard=tr
 
 ### Leaderboard (`-var enable_leaderboard=true`)
 
-Adds a DynamoDB table and one more operation on the same endpoint. Clients can only **read**.
+Adds a DynamoDB table and one more operation on the same endpoint. Clients can only **read**;
+scores are written by dedicated servers (*Score submission* below).
 
 | | |
 |---|---|
@@ -170,11 +171,40 @@ Adds a DynamoDB table and one more operation on the same endpoint. Clients can o
   older proxy gives, so the game treats both as "no leaderboard here"; `InvalidRequestException`
   (unknown board); `LeaderboardUnavailableException` (502, the DynamoDB cause is in the Lambda log).
 
-There is **no write path for clients or servers yet**; rows come from the operator script:
+#### Score submission (`-var leaderboard_server_key_ssm_parameter=…`)
+
+Clients still cannot write. Scores are added by **dedicated servers** with one more operation,
+which only exists once a server key is configured:
+
+```bash
+infrastructure/scripts/gamelift/leaderboard.sh server-key create      # random key -> SSM SecureString, never printed
+infrastructure/scripts/gamelift/proxy-deploy.sh apply -var leaderboard_server_key_ssm_parameter=/frontendui/leaderboard/server-key
+```
+
+`X-Amz-Target: Leaderboard.AddScore`, header `X-Server-Key: <key>`, body
+`{"Board":"Main","PlayerSessionId":"psess-…","Points":100,"DisplayName":"…"}` →
+`{"Board":"Main","Awarded":true,"Points":100}`.
+
+| Rule | Why |
+|---|---|
+| The server key decides, not a player token (`403 AccessDeniedException` without it, also in `auth_mode=eos` with a valid bearer) | Players must never be able to call it |
+| The caller names a **player session**, not a player. The Lambda asks GameLift (`DescribePlayerSessions`) and credits that record's `PlayerId` | In `auth_mode=eos` that id is the Epic account this proxy verified when the slot was created; nothing the server says can redirect the points |
+| The player session must be on the pinned fleet and `ACTIVE` or `COMPLETED` | A slot that was reserved but never accepted by a server (`RESERVED`, `TIMEDOUT`) earns nothing |
+| One reward per player session: a marker item (`Board` = `~award#<board>`, `PlayerId` = the player session id, expires after 90 days through the table TTL) is written in the same transaction as the score | A retried or replayed request answers `{"Awarded":false,"Reason":"AlreadyAwarded"}` and changes nothing; a leaked key can at most reward real slots once each |
+| `Points` 1..1000 per award (`LEADERBOARD_MAX_POINTS_PER_AWARD`), added to the running total | |
+
+The Lambda role gains `dynamodb:PutItem` / `UpdateItem` on the table, `ssm:GetParameter` on that
+one parameter and `gamelift:DescribePlayerSessions` - only when the key is configured. The key is
+re-read every 5 minutes; `leaderboard.sh server-key rotate` replaces it (restart the servers).
+The game server reads it from `GAMELIFT_SERVER_KEY` (`LaunchDedicatedServer.bat` fetches it from
+SSM); it must never be baked into a client build or an .ini.
+
+Operator script, for looking at the table and for test data:
 
 ```bash
 infrastructure/scripts/gamelift/leaderboard.sh seed --count 25      # synthetic rows: ids seed-NNN, names "... (seed)"
 infrastructure/scripts/gamelift/leaderboard.sh top --limit 10       # what GetTop reads, with ids
+infrastructure/scripts/gamelift/leaderboard.sh awards               # latest rewarded player sessions
 infrastructure/scripts/gamelift/leaderboard.sh put --player-id <Epic account id> --name <name> --score 12345
 infrastructure/scripts/gamelift/leaderboard.sh clear-seed           # deletes only the seed-* rows
 ```

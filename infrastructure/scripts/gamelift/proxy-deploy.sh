@@ -37,10 +37,12 @@ export TF_VAR_auth_mode="$(get AUTH_MODE)"; [[ -n "$TF_VAR_auth_mode" ]] || TF_V
 export TF_VAR_eos_client_id="$(get EOS_CLIENT_ID)"
 export TF_VAR_eos_client_secret_ssm_parameter="$(get EOS_CLIENT_SECRET_PARAM)"
 if [[ -n "$(get LEADERBOARD_TABLE)" ]]; then export TF_VAR_enable_leaderboard=true; else export TF_VAR_enable_leaderboard=false; fi
+export TF_VAR_leaderboard_server_key_ssm_parameter="$(get LEADERBOARD_SERVER_KEY_PARAM)"
 
 echo "carrying forward from $FUNCTION: auth_mode=$TF_VAR_auth_mode fleet_id=${TF_VAR_fleet_id:--} alias_id=${TF_VAR_alias_id:--}" \
      "queue_name=${TF_VAR_queue_name:--} eos_client_id=$(mask "$TF_VAR_eos_client_id")" \
-     "eos_client_secret_ssm_parameter=${TF_VAR_eos_client_secret_ssm_parameter:--} enable_leaderboard=$TF_VAR_enable_leaderboard"
+     "eos_client_secret_ssm_parameter=${TF_VAR_eos_client_secret_ssm_parameter:--} enable_leaderboard=$TF_VAR_enable_leaderboard" \
+     "leaderboard_server_key_ssm_parameter=${TF_VAR_leaderboard_server_key_ssm_parameter:--}"
 [[ $# -gt 0 ]] && echo "overrides: $*"
 
 terraform -chdir="$DIR" init -input=false -backend-config=backend.hcl >/dev/null

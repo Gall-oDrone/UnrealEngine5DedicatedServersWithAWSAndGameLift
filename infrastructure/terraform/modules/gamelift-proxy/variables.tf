@@ -77,3 +77,9 @@ variable "leaderboard_deletion_protection" {
   type        = bool
   default     = false
 }
+
+variable "leaderboard_server_key_ssm_parameter" {
+  description = "SSM SecureString parameter name (e.g. /frontendui/leaderboard/server-key) holding the key dedicated servers present to submit scores (Leaderboard.AddScore). Empty = no score submission. Create it with scripts/gamelift/leaderboard.sh server-key create; the value never enters Terraform state."
+  type        = string
+  default     = ""
+}
