@@ -19,7 +19,8 @@ FOREIGN_SESSION = "arn:aws:gamelift:us-east-1::gamesession/fleet-other/custom-x/
 
 
 def load(monkeypatch, **env):
-    for k in ("FLEET_ID", "ALIAS_ID", "QUEUE_NAME", "AUTH_MODE", "EOS_CLIENT_ID", "LEADERBOARD_TABLE", "LEADERBOARD_INDEX", "LEADERBOARD_BOARDS"):
+    for k in ("FLEET_ID", "ALIAS_ID", "QUEUE_NAME", "AUTH_MODE", "EOS_CLIENT_ID", "LEADERBOARD_TABLE", "LEADERBOARD_INDEX", "LEADERBOARD_BOARDS",
+              "LEADERBOARD_SERVER_KEY_PARAM", "LEADERBOARD_MAX_POINTS_PER_AWARD"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
@@ -421,3 +422,202 @@ def test_dynamodb_requests_are_signed_for_dynamodb(monkeypatch):
                              region="us-east-1", content_type="application/x-amz-json-1.0")
     assert "/us-east-1/dynamodb/aws4_request" in h["Authorization"]
     assert h["Content-Type"] == "application/x-amz-json-1.0" and h["X-Amz-Target"] == "DynamoDB_20120810.Query"
+
+
+# ---- score submission (Leaderboard.AddScore; GameLift, SSM and DynamoDB stubbed) ----------
+
+KEY_PARAM = "/frontendui/leaderboard/server-key"
+SERVER_KEY = "k" * 40
+PSESS = "psess-11111111-2222-3333-4444-555555555555"
+
+
+def load_scoring(monkeypatch, player_session=None, key=SERVER_KEY, **env):
+    """Proxy with the write path on. player_session: what GameLift knows about PSESS (None = unknown id)."""
+    proxy, calls = load(monkeypatch, **{"FLEET_ID": FLEET, "LEADERBOARD_TABLE": TABLE, "LEADERBOARD_SERVER_KEY_PARAM": KEY_PARAM, **env})
+    monkeypatch.setattr(proxy, "_leaderboard_server_key", lambda: key)
+    known = {} if player_session is None else {PSESS: {"PlayerSessionId": PSESS, "FleetId": FLEET, "Status": "COMPLETED", "PlayerId": ME, **player_session}}
+
+    def gamelift(target, payload):
+        calls.append((target, payload))
+        assert target == "GameLift.DescribePlayerSessions", target
+        found = known.get(payload["PlayerSessionId"])
+        return 200, json.dumps({"PlayerSessions": [found] if found else []})
+
+    monkeypatch.setattr(proxy, "_call_gamelift", gamelift)
+    state = {"markers": set(), "scores": {}, "names": {}, "ops": []}
+
+    def dynamodb(operation, payload):
+        state["ops"].append((operation, payload))
+        assert operation == "TransactWriteItems", operation
+        put, update = payload["TransactItems"][0]["Put"], payload["TransactItems"][1]["Update"]
+        marker = (put["Item"]["Board"]["S"], put["Item"]["PlayerId"]["S"])
+        if marker in state["markers"]:
+            return 400, {"__type": "com.amazonaws.dynamodb.v20120810#TransactionCanceledException",
+                         "CancellationReasons": [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}]}
+        state["markers"].add(marker)
+        who = (update["Key"]["Board"]["S"], update["Key"]["PlayerId"]["S"])
+        state["scores"][who] = state["scores"].get(who, 0) + int(update["ExpressionAttributeValues"][":points"]["N"])
+        state["names"][who] = update["ExpressionAttributeValues"][":name"]["S"]
+        return 200, {}
+
+    monkeypatch.setattr(proxy, "_call_dynamodb", dynamodb)
+    return proxy, calls, state
+
+
+def add_score(proxy, payload=None, key=SERVER_KEY, extra_headers=None):
+    headers = {**({"x-server-key": key} if key is not None else {}), **(extra_headers or {})}
+    return post(proxy, "Leaderboard.AddScore", {"Board": "Main", "PlayerSessionId": PSESS, "Points": 100, "DisplayName": "Dgallo", **(payload or {})}, headers)
+
+
+def test_add_score_does_not_exist_without_a_server_key_parameter(monkeypatch):
+    proxy, calls = load(monkeypatch, FLEET_ID=FLEET, LEADERBOARD_TABLE=TABLE)
+    status, body = add_score(proxy)
+    assert status == 400 and body["__type"] == "UnsupportedOperationException" and calls == []
+
+
+def test_add_score_does_not_exist_without_a_table(monkeypatch):
+    proxy, calls = load(monkeypatch, FLEET_ID=FLEET, LEADERBOARD_SERVER_KEY_PARAM=KEY_PARAM)
+    status, body = add_score(proxy)
+    assert status == 400 and body["__type"] == "UnsupportedOperationException" and calls == []
+
+
+@pytest.mark.parametrize("key", [None, "", "wrong" * 8, SERVER_KEY[:-1], SERVER_KEY + "x"])
+def test_add_score_needs_the_server_key(monkeypatch, key):
+    proxy, calls, state = load_scoring(monkeypatch, {})
+    status, body = add_score(proxy, key=key)
+    assert status == 403 and body["__type"] == "AccessDeniedException"
+    assert calls == [] and state["ops"] == []
+
+
+def test_add_score_is_not_opened_by_a_player_token(monkeypatch):
+    # eos mode, a perfectly good player token, no server key: still refused, and Epic is never asked.
+    proxy, calls, state = load_scoring(monkeypatch, {}, AUTH_MODE="eos", EOS_CLIENT_ID="xyza")
+    monkeypatch.setattr(proxy, "_introspect_eos_token", lambda t: (_ for _ in ()).throw(AssertionError("must not introspect")))
+    status, body = add_score(proxy, key=None, extra_headers={"authorization": "Bearer " + "t" * 40})
+    assert status == 403 and state["ops"] == [] and calls == []
+
+
+def test_add_score_with_the_key_needs_no_player_token_in_eos_mode(monkeypatch):
+    proxy, _, state = load_scoring(monkeypatch, {}, AUTH_MODE="eos", EOS_CLIENT_ID="xyza")
+    status, body = add_score(proxy)
+    assert status == 200 and body == {"Board": "Main", "Awarded": True, "Points": 100}
+    assert state["scores"] == {("Main", ME): 100}
+
+
+@pytest.mark.parametrize("configured", ["", "short", "x" * 15])
+def test_a_short_or_empty_configured_key_opens_nothing(monkeypatch, configured):
+    proxy, _, state = load_scoring(monkeypatch, {}, key=configured)
+    status, _ = add_score(proxy, key=configured)
+    assert status == 403 and state["ops"] == []
+
+
+def test_an_unreadable_key_refuses_everyone(monkeypatch):
+    proxy, _, state = load_scoring(monkeypatch, {})
+
+    def boom():
+        raise RuntimeError("AccessDeniedException: arn:aws:ssm:secret-detail")
+
+    monkeypatch.setattr(proxy, "_leaderboard_server_key", boom)
+    status, body = add_score(proxy)
+    assert status == 502 and body["__type"] == "LeaderboardUnavailableException"
+    assert "ssm" not in json.dumps(body) and state["ops"] == []
+
+
+def test_add_score_credits_the_player_gamelift_names_not_the_caller(monkeypatch):
+    proxy, calls, state = load_scoring(monkeypatch, {"PlayerId": "the-real-account"})
+    status, body = add_score(proxy, {"PlayerId": "someone-i-like", "Points": 250, "DisplayName": "  Dgallo117  "})
+    assert status == 200 and body["Awarded"] is True and body["Points"] == 250
+    assert calls == [("GameLift.DescribePlayerSessions", {"PlayerSessionId": PSESS})]
+    assert state["scores"] == {("Main", "the-real-account"): 250} and state["names"][("Main", "the-real-account")] == "Dgallo117"
+    assert "the-real-account" not in json.dumps(body)
+    put = state["ops"][0][1]["TransactItems"][0]["Put"]
+    assert put["Item"]["Board"]["S"] == "~award#Main" and put["Item"]["PlayerId"]["S"] == PSESS
+    assert put["ConditionExpression"] == "attribute_not_exists(#p)" and "Score" not in put["Item"]
+    assert int(put["Item"]["ExpiresAt"]["N"]) > 1_700_000_000
+
+
+def test_add_score_rewards_a_player_session_once(monkeypatch):
+    proxy, _, state = load_scoring(monkeypatch, {})
+    assert add_score(proxy)[1]["Awarded"] is True
+    status, body = add_score(proxy, {"Points": 999})
+    assert status == 200 and body == {"Board": "Main", "Awarded": False, "Reason": "AlreadyAwarded"}
+    assert state["scores"] == {("Main", ME): 100}
+
+
+def test_add_score_is_a_running_total_across_player_sessions(monkeypatch):
+    proxy, _, state = load_scoring(monkeypatch, {})
+    other = "psess-99999999-2222-3333-4444-555555555555"
+    known_call = proxy._call_gamelift
+
+    def gamelift(target, payload):
+        if payload["PlayerSessionId"] == other:
+            return 200, json.dumps({"PlayerSessions": [{"PlayerSessionId": other, "FleetId": FLEET, "Status": "ACTIVE", "PlayerId": ME}]})
+        return known_call(target, payload)
+
+    monkeypatch.setattr(proxy, "_call_gamelift", gamelift)
+    add_score(proxy, {"Points": 100})
+    add_score(proxy, {"PlayerSessionId": other, "Points": 40})
+    assert state["scores"] == {("Main", ME): 140}
+
+
+@pytest.mark.parametrize("session,why", [
+    (None, "Unknown player session"),
+    ({"FleetId": "fleet-somebody-else"}, "does not belong to this fleet"),
+    ({"Status": "RESERVED"}, "never accepted"),
+    ({"Status": "TIMEDOUT"}, "never accepted"),
+    ({"PlayerId": ""}, "no player"),
+])
+def test_add_score_only_for_slots_really_played_on_this_fleet(monkeypatch, session, why):
+    proxy, _, state = load_scoring(monkeypatch, session)
+    status, body = add_score(proxy)
+    assert status == 400 and body["__type"] == "InvalidRequestException" and why in body["message"]
+    assert state["ops"] == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"Points": 0}, {"Points": -5}, {"Points": 1001}, {"Points": 12.5}, {"Points": "100"}, {"Points": True}, {"Points": None},
+    {"PlayerSessionId": ""}, {"PlayerSessionId": "gsess-1"}, {"PlayerSessionId": "psess-" + "x" * 80}, {"PlayerSessionId": 7},
+    {"Board": "~award#Main"}, {"Board": "Nope"},
+])
+def test_add_score_rejects_bad_requests_before_asking_anyone(monkeypatch, payload):
+    proxy, calls, state = load_scoring(monkeypatch, {})
+    status, body = add_score(proxy, payload)
+    assert status == 400 and body["__type"] == "InvalidRequestException"
+    assert calls == [] and state["ops"] == []
+
+
+def test_add_score_accepts_whole_numbers_sent_as_floats_and_respects_the_cap(monkeypatch):
+    proxy, _, state = load_scoring(monkeypatch, {}, LEADERBOARD_MAX_POINTS_PER_AWARD="50")
+    assert add_score(proxy, {"Points": 50.0})[0] == 200 and state["scores"] == {("Main", ME): 50}
+    assert add_score(proxy, {"Points": 51})[0] == 400
+
+
+def test_add_score_cleans_the_display_name(monkeypatch):
+    proxy, _, state = load_scoring(monkeypatch, {})
+    add_score(proxy, {"DisplayName": "\x00\n" + "N" * 80})
+    assert state["names"][("Main", ME)] == "N" * 32
+    proxy, _, state = load_scoring(monkeypatch, {})
+    add_score(proxy, {"DisplayName": 12345})
+    assert state["names"][("Main", ME)] == "Player"
+
+
+def test_add_score_storage_failure_stays_in_the_log(monkeypatch):
+    proxy, _, _ = load_scoring(monkeypatch, {})
+    monkeypatch.setattr(proxy, "_call_dynamodb", lambda op, payload: (400, {"__type": "x#AccessDeniedException", "Message": "secret table arn"}))
+    status, body = add_score(proxy)
+    assert status == 502 and body["__type"] == "LeaderboardUnavailableException" and "secret" not in json.dumps(body)
+
+
+def test_add_score_gamelift_outage_is_not_blamed_on_the_request(monkeypatch):
+    proxy, _, state = load_scoring(monkeypatch, {})
+    monkeypatch.setattr(proxy, "_call_gamelift", lambda target, payload: (503, "upstream sad"))
+    status, body = add_score(proxy)
+    assert status == 502 and body["__type"] == "LeaderboardUnavailableException" and state["ops"] == []
+
+
+def test_clients_still_cannot_reach_the_markers_or_write(monkeypatch):
+    proxy, _ = load(monkeypatch, FLEET_ID=FLEET, LEADERBOARD_TABLE=TABLE, LEADERBOARD_SERVER_KEY_PARAM=KEY_PARAM)
+    ddb = fake_dynamodb(monkeypatch, proxy, BOARD)
+    status, body = post(proxy, "Leaderboard.GetTop", {"Board": "~award#Main"})
+    assert status == 400 and body["__type"] == "InvalidRequestException" and ddb == []
+    assert proxy.LEADERBOARD_TARGETS == {"Leaderboard.GetTop"} and proxy.LEADERBOARD_SERVER_TARGETS == {"Leaderboard.AddScore"}

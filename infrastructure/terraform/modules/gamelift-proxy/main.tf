@@ -139,6 +139,13 @@ resource "aws_dynamodb_table" "leaderboard" {
     enabled = true
   }
 
+  # Only the "this player session was already rewarded" markers carry ExpiresAt (score
+  # submission, see lambda/proxy.py); score rows never expire.
+  ttl {
+    attribute_name = "ExpiresAt"
+    enabled        = true
+  }
+
   deletion_protection_enabled = var.leaderboard_deletion_protection
 }
 
@@ -157,6 +164,44 @@ resource "aws_iam_role_policy" "leaderboard" {
   name   = "leaderboard-read"
   role   = aws_iam_role.lambda.id
   policy = data.aws_iam_policy_document.leaderboard[0].json
+}
+
+# Score submission (Leaderboard.AddScore), only when a server key is configured. The Lambda
+# then may write items, read that one key, and ask GameLift who a player session belongs to.
+# The write is still not reachable by players: the Lambda demands the server key first.
+locals {
+  leaderboard_write = var.enable_leaderboard && var.leaderboard_server_key_ssm_parameter != ""
+}
+
+data "aws_iam_policy_document" "leaderboard_write" {
+  count = local.leaderboard_write ? 1 : 0
+  statement {
+    sid       = "LeaderboardWrite"
+    actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.leaderboard[0].arn]
+  }
+  statement {
+    sid       = "ServerKey"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.leaderboard_server_key_ssm_parameter}"]
+  }
+  statement {
+    sid       = "ServerKeyDecrypt"
+    actions   = ["kms:Decrypt"]
+    resources = ["arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"]
+  }
+  statement {
+    sid       = "WhoseSlotWasIt"
+    actions   = ["gamelift:DescribePlayerSessions"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "leaderboard_write" {
+  count  = local.leaderboard_write ? 1 : 0
+  name   = "leaderboard-write"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.leaderboard_write[0].json
 }
 
 resource "aws_iam_role_policy_attachment" "logs" {
@@ -194,6 +239,8 @@ resource "aws_lambda_function" "proxy" {
       LEADERBOARD_TABLE       = var.enable_leaderboard ? aws_dynamodb_table.leaderboard[0].name : ""
       LEADERBOARD_INDEX       = "ByScore"
       LEADERBOARD_BOARDS      = join(",", var.leaderboard_boards)
+      # Empty unless the table exists too: without it there is nothing to write to.
+      LEADERBOARD_SERVER_KEY_PARAM = local.leaderboard_write ? var.leaderboard_server_key_ssm_parameter : ""
     }
   }
 

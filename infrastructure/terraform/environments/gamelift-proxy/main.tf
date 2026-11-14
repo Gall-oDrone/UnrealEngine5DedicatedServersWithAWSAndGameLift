@@ -42,6 +42,8 @@ module "proxy" {
   eos_client_secret_ssm_parameter = var.eos_client_secret_ssm_parameter
   queue_name                      = var.queue_name
   enable_leaderboard              = var.enable_leaderboard
+
+  leaderboard_server_key_ssm_parameter = var.leaderboard_server_key_ssm_parameter
 }
 
 variable "aws_region" {
@@ -85,6 +87,12 @@ variable "enable_leaderboard" {
   description = "DynamoDB leaderboard table + Leaderboard.GetTop on the proxy (see modules/gamelift-proxy)."
   type        = bool
   default     = false
+}
+
+variable "leaderboard_server_key_ssm_parameter" {
+  description = "SSM SecureString with the dedicated servers' key for Leaderboard.AddScore. Empty = scores cannot be submitted."
+  type        = string
+  default     = ""
 }
 
 output "api_endpoint_url" {
