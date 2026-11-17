@@ -76,9 +76,13 @@ image's entrypoint reads it at start with the fleet role. `create` gives
 `FrontendUI-GameLiftContainerFleetRole` an inline policy (`read-leaderboard-server-key`:
 `ssm:GetParameter` on that one parameter) for it; `key-access` does only that, for a fleet that
 already runs. Without `GAMELIFT_ENDPOINT_URL` the environment of the current CGD version is kept.
-The entrypoint's fetch is verified off-fleet (game repo, Docs/GameLift.md §6); **a fleet with it
-has not been run yet** - its first container log lines (`[entrypoint] leaderboard: …`) say whether
-the role's read worked.
+The first container log lines (`[entrypoint] leaderboard: …`) say whether the role's read worked.
+
+Verified 2026-11-17: `create --image-tag a4a4ddf --min 1 --max 1` (CGD v7) put the inline policy on
+the role, the fleet was ACTIVE after 8 min, and all three containers logged `server key loaded` and
+`[gamelift] score submission: on`; the key is in none of the fleet's log events. `delete` followed.
+Not exercised: an award from a fleet server (no match was played on the test fleet), `key-access`
+on its own.
 
 Verified 2026-11-10: `create` took 7 min to ACTIVE; a game-session-queue placement fulfilled in
 < 15 s; with the single container busy, target tracking brought a second instance to ACTIVE in
