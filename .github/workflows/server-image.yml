@@ -155,6 +155,10 @@ jobs:
       - name: Container group definition version
         if: ${{ !inputs.dry_run && inputs.cgd_version }}
         id: cgd
+        env:
+          # The container is told the proxy URL and the NAME of the SSM parameter with the servers'
+          # leaderboard key; the image reads the key itself at start (container-fleet.sh).
+          GAMELIFT_ENDPOINT_URL: ${{ vars.GAMELIFT_ENDPOINT_URL }}
         run: |
           args=(cgd --image-tag "${{ steps.image.outputs.tag }}")
           [[ -n "${{ inputs.rollout_fleet_id }}" ]] && args+=(--fleet-id "${{ inputs.rollout_fleet_id }}")
