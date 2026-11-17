@@ -61,11 +61,24 @@ $S status --alias alias-...
 $S delete --fleet-id containerfleet-... --alias alias-... --restore-fleet fleet-...   # same day!
 ```
 
-`create` reuses the CGD version when the image tag is unchanged, waits for ACTIVE (and prints the
-CloudWatch log group if the activation test fails), sets min/max capacity and a
-`PercentAvailableGameSessions` target policy (50 % = keep one spare session's worth of capacity:
-with one session per instance that means a second instance starts as soon as the first is in
-use), and points the alias at the new fleet so clients and the proxy follow without changes.
+`create` reuses the CGD version when the image and the container's environment are unchanged, waits
+for ACTIVE (and prints the CloudWatch log group if the activation test fails), sets min/max capacity
+and a `PercentAvailableGameSessions` target policy (50 % = keep one spare session's worth of
+capacity: with one session per instance that means a second instance starts as soon as the first is
+in use), and points the alias at the new fleet so clients and the proxy follow without changes.
+
+**Leaderboard scores on a container fleet.** Run `create` / `cgd` with `GAMELIFT_ENDPOINT_URL`
+(the proxy) exported and the CGD version gives the container two environment variables: that URL
+and `GAMELIFT_SERVER_KEY_PARAM`, the *name* of the SSM parameter with the servers' key
+(`LEADERBOARD_SERVER_KEY_PARAM`, default `/frontendui/leaderboard/server-key`). The key itself is
+not in the definition, where anybody who can read the GameLift configuration would see it: the
+image's entrypoint reads it at start with the fleet role. `create` gives
+`FrontendUI-GameLiftContainerFleetRole` an inline policy (`read-leaderboard-server-key`:
+`ssm:GetParameter` on that one parameter) for it; `key-access` does only that, for a fleet that
+already runs. Without `GAMELIFT_ENDPOINT_URL` the environment of the current CGD version is kept.
+The entrypoint's fetch is verified off-fleet (game repo, Docs/GameLift.md §6); **a fleet with it
+has not been run yet** - its first container log lines (`[entrypoint] leaderboard: …`) say whether
+the role's read worked.
 
 Verified 2026-11-10: `create` took 7 min to ACTIVE; a game-session-queue placement fulfilled in
 < 15 s; with the single container busy, target tracking brought a second instance to ACTIVE in

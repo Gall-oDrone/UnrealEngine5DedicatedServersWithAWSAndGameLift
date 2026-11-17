@@ -5,15 +5,24 @@
 #   container-fleet.sh create  [--image-tag <sha>] [--instance-type c6i.xlarge] [--min 1] [--max 2]
 #                              [--target 50] [--alias <alias-id>] [--cidr 0.0.0.0/0]
 #   container-fleet.sh cgd     --image-tag <sha> [--fleet-id <containerfleet-id>]   # new CGD version only (CI)
+#   container-fleet.sh key-access                                    # fleet role may read the server key
 #   container-fleet.sh status  [--fleet-id <containerfleet-id>]      # default: the fleet the alias points at
 #   container-fleet.sh delete  --fleet-id <containerfleet-id> [--alias <alias-id> --restore-fleet <fleet-id>]
 #
-# create:  CGD version for the image (new version only if the tag changed) -> fleet -> wait ACTIVE
-#          -> capacity min/max -> target-tracking policy on PercentAvailableGameSessions
-#          -> optional alias switch -> prints a client-free smoke test.
+# create:  CGD version for the image (new version only if the image or its environment changed)
+#          -> fleet -> wait ACTIVE -> capacity min/max -> target-tracking policy on
+#          PercentAvailableGameSessions -> optional alias switch -> prints a client-free smoke test.
 # cgd:     CGD version for the image, nothing billable; with --fleet-id also starts the rolling
 #          deployment of that version onto the running fleet (~10 min) and waits for it.
 # delete:  optional alias restore -> delete fleet -> wait until gone. The CGD and ECR image stay.
+#
+# Leaderboard scores: with GAMELIFT_ENDPOINT_URL (the proxy) in the environment, the CGD version
+# gives the container that URL and the *name* of the SSM parameter that holds the servers' key
+# (LEADERBOARD_SERVER_KEY_PARAM, default /frontendui/leaderboard/server-key). The key itself is
+# never in the definition - whoever can read the GameLift configuration would see it there - the
+# image's entrypoint reads it at start with the fleet role, which `create` (or `key-access`, for a
+# fleet that already runs) allows to read that one parameter. Without GAMELIFT_ENDPOINT_URL the
+# environment of the current CGD version is carried forward unchanged.
 #
 # Billing: >= min instances x instance price from create until delete. Default c6i.xlarge
 # (~$0.17/h) runs 3 game sessions per instance with the 1 vCPU / 2 GiB CGD; c6i.large (~$0.09/h)
@@ -24,6 +33,8 @@ REGION="${AWS_REGION:-us-east-1}"
 CGD_NAME="${CGD_NAME:-frontendui-server}"
 ECR_REPO="${ECR_REPO:-frontendui-server}"
 ROLE_NAME="${FLEET_ROLE_NAME:-FrontendUI-GameLiftContainerFleetRole}"
+KEY_PARAM="${LEADERBOARD_SERVER_KEY_PARAM:-/frontendui/leaderboard/server-key}"
+KEY_POLICY_NAME="read-leaderboard-server-key"
 PORT_FROM=7777
 PORT_TO=7877
 
@@ -41,7 +52,7 @@ while [[ $# -gt 0 ]]; do
     --cidr) CIDR="$2"; shift 2 ;;
     --fleet-id) FLEET_ID="$2"; shift 2 ;;
     --restore-fleet) RESTORE_FLEET="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -69,20 +80,47 @@ wait_fleet_active() {
   echo "timed out waiting for the fleet" >&2; return 1
 }
 
+# The fleet role may read the one SSM parameter that holds the servers' key, nothing else. The
+# parameter is encrypted with the account's aws/ssm key, which needs no kms:Decrypt grant of its
+# own; a parameter under a customer-managed key would need one.
+ensure_role_can_read_key() {
+  local account policy
+  account=$(aws sts get-caller-identity --query Account --output text)
+  policy=$(jq -cn --arg arn "arn:aws:ssm:$REGION:$account:parameter$KEY_PARAM" \
+    '{Version:"2012-10-17",Statement:[{Sid:"ReadLeaderboardServerKey",Effect:"Allow",Action:"ssm:GetParameter",Resource:$arn}]}')
+  aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name "$KEY_POLICY_NAME" --policy-document "$policy"
+  log "role $ROLE_NAME may read $KEY_PARAM (inline policy $KEY_POLICY_NAME)"
+}
+
+# Sets CGD_ARN and CGD_HAS_KEY_PARAM (true when the container is told where the key is).
 ensure_cgd_version() {
-  local account ecr uri current
+  local account ecr uri current_def env_json def current wanted s
   account=$(aws sts get-caller-identity --query Account --output text)
   ecr="$account.dkr.ecr.$REGION.amazonaws.com"
   uri="$ecr/$ECR_REPO:$IMAGE_TAG"
   aws ecr describe-images --region "$REGION" --repository-name "$ECR_REPO" --image-ids imageTag="$IMAGE_TAG" --query 'imageDetails[0].imageDigest' --output text >/dev/null \
     || { echo "image $uri not found in ECR" >&2; return 1; }
-  current=$(gl describe-container-group-definition --name "$CGD_NAME" --query 'ContainerGroupDefinition.GameServerContainerDefinition.ImageUri' --output text 2>/dev/null || echo "")
-  if [[ "$current" == "$uri" ]]; then
-    log "CGD $CGD_NAME already at $uri"
+  current_def=$(gl describe-container-group-definition --name "$CGD_NAME" --query 'ContainerGroupDefinition.GameServerContainerDefinition' --output json 2>/dev/null || echo "{}")
+  # The container's environment: the proxy URL and the NAME of the key parameter - never the key.
+  if [[ -n "${GAMELIFT_ENDPOINT_URL:-}" ]]; then
+    env_json=$(jq -cn --arg u "$GAMELIFT_ENDPOINT_URL" --arg p "$KEY_PARAM" \
+      '[{Name:"GAMELIFT_ENDPOINT_URL",Value:$u},{Name:"GAMELIFT_SERVER_KEY_PARAM",Value:$p}]')
+  else
+    env_json=$(jq -c '(.EnvironmentOverride // []) | sort_by(.Name)' <<<"$current_def")
+  fi
+  def=$(jq -cn --arg uri "$uri" --argjson env "$env_json" \
+    '{ContainerName:"frontendui",ImageUri:$uri,ServerSdkVersion:"5.2.0",PortConfiguration:{ContainerPortRanges:[{FromPort:7777,ToPort:7777,Protocol:"UDP"}]}}
+     + (if ($env|length) > 0 then {EnvironmentOverride:$env} else {} end)')
+  current=$(jq -c '{ImageUri, env: ((.EnvironmentOverride // []) | sort_by(.Name))}' <<<"$current_def")
+  wanted=$(jq -c '{ImageUri, env: ((.EnvironmentOverride // []) | sort_by(.Name))}' <<<"$def")
+  CGD_HAS_KEY_PARAM=$(jq -r 'any(.[]; .Name == "GAMELIFT_SERVER_KEY_PARAM")' <<<"$env_json")
+  log "container environment: $(jq -r 'if length == 0 then "none (servers will not submit leaderboard scores)" else map("\(.Name)=\(.Value)") | join(" ") end' <<<"$env_json")"
+  if [[ "$current" == "$wanted" ]]; then
+    log "CGD $CGD_NAME already at $uri with this environment"
   else
     log "CGD $CGD_NAME: new version for $uri"
     gl update-container-group-definition --name "$CGD_NAME" --version-description "$IMAGE_TAG" \
-      --game-server-container-definition "{\"ContainerName\":\"frontendui\",\"ImageUri\":\"$uri\",\"ServerSdkVersion\":\"5.2.0\",\"PortConfiguration\":{\"ContainerPortRanges\":[{\"FromPort\":7777,\"ToPort\":7777,\"Protocol\":\"UDP\"}]}}" \
+      --game-server-container-definition "$def" \
       --query 'ContainerGroupDefinition.VersionNumber' --output text >/dev/null
     for _ in $(seq 1 20); do
       s=$(gl describe-container-group-definition --name "$CGD_NAME" --query 'ContainerGroupDefinition.Status' --output text)
@@ -98,6 +136,7 @@ case "$cmd" in
   create)
     ensure_cgd_version
     ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query Role.Arn --output text)
+    [[ "$CGD_HAS_KEY_PARAM" != "true" ]] || ensure_role_can_read_key
     log "creating fleet: $INSTANCE_TYPE, image tag $IMAGE_TAG, UDP $PORT_FROM-$PORT_TO from $CIDR"
     FLEET_ID=$(gl create-container-fleet --cli-input-json "$(cat <<EOF
 {"FleetRoleArn":"$ROLE_ARN","Description":"FrontendUI container fleet ($IMAGE_TAG)",
@@ -151,6 +190,12 @@ EOF
     echo "cgd_version=$CGD_VERSION"
     ;;
 
+  key-access)
+    # For a fleet that was created before its servers submitted scores. Undo with:
+    #   aws iam delete-role-policy --role-name <role> --policy-name read-leaderboard-server-key
+    ensure_role_can_read_key
+    ;;
+
   status)
     if [[ -z "$FLEET_ID" && -n "$ALIAS" ]]; then FLEET_ID=$(gl describe-alias --alias-id "$ALIAS" --query 'Alias.RoutingStrategy.FleetId' --output text); fi
     [[ -n "$FLEET_ID" ]] || { echo "--fleet-id or --alias required" >&2; exit 2; }
@@ -176,5 +221,5 @@ EOF
     log "remaining container fleets: $(gl list-container-fleets --query 'length(ContainerFleets)' --output text)"
     ;;
 
-  *) sed -n '2,19p' "$0"; exit 2 ;;
+  *) sed -n '2,29p' "$0"; exit 2 ;;
 esac
