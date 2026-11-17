@@ -127,10 +127,12 @@ case "$cmd" in
     ;;
 
   awards)
-    ddb query --table-name "$TABLE" --no-scan-index-forward --limit "$LIMIT" \
+    # The markers are keyed by player session id, not by time: read them all (they expire
+    # after 90 days, so the set stays small) and sort by AwardedAt here.
+    ddb query --table-name "$TABLE" \
       --key-condition-expression '#b = :b' --expression-attribute-names '{"#b":"Board"}' \
       --expression-attribute-values "$(jq -cn --arg b "~award#$BOARD" '{":b":{S:$b}}')" --output json \
-      | jq -r '.Items[] | [.AwardedAt.S, .Points.N, .PlayerId.S, (.AwardedTo.S[0:6] + "...")] | @tsv' | sort -r
+      | jq -r '.Items[] | [.AwardedAt.S, .Points.N, .PlayerId.S, (.AwardedTo.S[0:6] + "...")] | @tsv' | sort -r | head -n "$LIMIT"
     ;;
 
   *) sed -n '2,23p' "$0"; exit 2 ;;
